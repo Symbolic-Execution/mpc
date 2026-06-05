@@ -1,9 +1,22 @@
-use crate::error::MpcError;
-use crate::types::{Address, AttestationDigest, DomainId, HandleId, KeyId, ReaderId, RequestId};
 use ciborium::value::Value;
 use std::io::Cursor;
+use types::{Address, AttestationDigest, DomainId, HandleId, KeyId, ReaderId, RequestId};
 
 const AAD_VERSION_V1: u8 = 1;
+
+#[derive(Debug, thiserror::Error)]
+pub enum CodecError {
+    #[error("malformed request: {0}")]
+    BadRequest(String),
+    #[error("invalid request binding: {0}")]
+    Unprocessable(String),
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct AadCodec;
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PlaintextCodec;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AadKind {
@@ -75,95 +88,115 @@ pub enum SourceAad {
     SystemHandle(SystemHandleAadV1),
 }
 
-pub fn encode_aad(aad: &Aad) -> Result<Vec<u8>, MpcError> {
-    let (version, kind, expected_kind) = match aad {
-        Aad::SystemInput(aad) => (aad.version, aad.kind, AadKind::SystemInput),
-        Aad::SystemHandle(aad) => (aad.version, aad.kind, AadKind::SystemHandle),
-        Aad::Enclave(aad) => (aad.version, aad.kind, AadKind::Enclave),
-        Aad::Reader(aad) => (aad.version, aad.kind, AadKind::Reader),
-    };
-    if version != AAD_VERSION_V1 {
-        return Err(bad_request(format!("unsupported aad version: {version}")));
+impl AadCodec {
+    pub fn encode(aad: &Aad) -> Result<Vec<u8>, CodecError> {
+        let (version, kind, expected_kind) = match aad {
+            Aad::SystemInput(aad) => (aad.version, aad.kind, AadKind::SystemInput),
+            Aad::SystemHandle(aad) => (aad.version, aad.kind, AadKind::SystemHandle),
+            Aad::Enclave(aad) => (aad.version, aad.kind, AadKind::Enclave),
+            Aad::Reader(aad) => (aad.version, aad.kind, AadKind::Reader),
+        };
+        if version != AAD_VERSION_V1 {
+            return Err(bad_request(format!("unsupported aad version: {version}")));
+        }
+        if kind != expected_kind {
+            return Err(bad_request("aad wrapper kind mismatch"));
+        }
+
+        let value = match aad {
+            Aad::SystemInput(aad) => Value::Array(vec![
+                integer(aad.version),
+                integer(aad.kind as u8),
+                integer(aad.chain_id),
+                bytes(&aad.domain_id.0),
+                bytes(&aad.contract.0),
+                Value::Text(aad.type_tag.clone()),
+                bytes(&aad.key_id.0),
+            ]),
+            Aad::SystemHandle(aad) => Value::Array(vec![
+                integer(aad.version),
+                integer(aad.kind as u8),
+                integer(aad.chain_id),
+                bytes(&aad.domain_id.0),
+                bytes(&aad.handle_id.0),
+                Value::Text(aad.type_tag.clone()),
+                bytes(&aad.key_id.0),
+            ]),
+            Aad::Enclave(aad) => Value::Array(vec![
+                integer(aad.version),
+                integer(aad.kind as u8),
+                integer(aad.chain_id),
+                bytes(&aad.domain_id.0),
+                bytes(&aad.request_id.0),
+                bytes(&aad.handle_id.0),
+                Value::Text(aad.type_tag.clone()),
+                bytes(&aad.attestation_digest.0),
+                bytes(&aad.key_id.0),
+            ]),
+            Aad::Reader(aad) => Value::Array(vec![
+                integer(aad.version),
+                integer(aad.kind as u8),
+                integer(aad.chain_id),
+                bytes(&aad.domain_id.0),
+                bytes(&aad.request_id.0),
+                bytes(&aad.handle_id.0),
+                bytes(&aad.reader_id.0),
+                Value::Text(aad.type_tag.clone()),
+                bytes(&aad.key_id.0),
+            ]),
+        };
+
+        let mut encoded = Vec::new();
+        ciborium::ser::into_writer(&value, &mut encoded)
+            .map_err(|err| bad_request(format!("failed to encode aad: {err}")))?;
+        Ok(encoded)
     }
-    if kind != expected_kind {
-        return Err(bad_request("aad wrapper kind mismatch"));
+
+    pub fn decode_source(bytes: &[u8]) -> Result<SourceAad, CodecError> {
+        let values = decode_array(bytes)?;
+        require_version(&values)?;
+
+        match aad_kind(&values)? {
+            AadKind::SystemInput => decode_system_input(values).map(SourceAad::SystemInput),
+            AadKind::SystemHandle => decode_system_handle(values).map(SourceAad::SystemHandle),
+            AadKind::Enclave | AadKind::Reader => Err(bad_request("aad kind is not a source aad")),
+        }
     }
 
-    let value = match aad {
-        Aad::SystemInput(aad) => Value::Array(vec![
-            integer(aad.version),
-            integer(aad.kind as u8),
-            integer(aad.chain_id),
-            bytes(&aad.domain_id.0),
-            bytes(&aad.contract.0),
-            Value::Text(aad.type_tag.clone()),
-            bytes(&aad.key_id.0),
-        ]),
-        Aad::SystemHandle(aad) => Value::Array(vec![
-            integer(aad.version),
-            integer(aad.kind as u8),
-            integer(aad.chain_id),
-            bytes(&aad.domain_id.0),
-            bytes(&aad.handle_id.0),
-            Value::Text(aad.type_tag.clone()),
-            bytes(&aad.key_id.0),
-        ]),
-        Aad::Enclave(aad) => Value::Array(vec![
-            integer(aad.version),
-            integer(aad.kind as u8),
-            integer(aad.chain_id),
-            bytes(&aad.domain_id.0),
-            bytes(&aad.request_id.0),
-            bytes(&aad.handle_id.0),
-            Value::Text(aad.type_tag.clone()),
-            bytes(&aad.attestation_digest.0),
-            bytes(&aad.key_id.0),
-        ]),
-        Aad::Reader(aad) => Value::Array(vec![
-            integer(aad.version),
-            integer(aad.kind as u8),
-            integer(aad.chain_id),
-            bytes(&aad.domain_id.0),
-            bytes(&aad.request_id.0),
-            bytes(&aad.handle_id.0),
-            bytes(&aad.reader_id.0),
-            Value::Text(aad.type_tag.clone()),
-            bytes(&aad.key_id.0),
-        ]),
-    };
+    pub fn decode_reader(bytes: &[u8]) -> Result<ReaderAadV1, CodecError> {
+        let values = decode_array(bytes)?;
+        require_version(&values)?;
+        require_kind(&values, AadKind::Reader)?;
+        decode_reader(values)
+    }
 
-    let mut encoded = Vec::new();
-    ciborium::ser::into_writer(&value, &mut encoded)
-        .map_err(|err| bad_request(format!("failed to encode aad: {err}")))?;
-    Ok(encoded)
-}
-
-pub fn decode_source_aad(bytes: &[u8]) -> Result<SourceAad, MpcError> {
-    let values = decode_array(bytes)?;
-    require_version(&values)?;
-
-    match aad_kind(&values)? {
-        AadKind::SystemInput => decode_system_input(values).map(SourceAad::SystemInput),
-        AadKind::SystemHandle => decode_system_handle(values).map(SourceAad::SystemHandle),
-        AadKind::Enclave | AadKind::Reader => Err(bad_request("aad kind is not a source aad")),
+    pub fn decode_enclave(bytes: &[u8]) -> Result<EnclaveAadV1, CodecError> {
+        let values = decode_array(bytes)?;
+        require_version(&values)?;
+        require_kind(&values, AadKind::Enclave)?;
+        decode_enclave(values)
     }
 }
 
-pub fn decode_reader_aad(bytes: &[u8]) -> Result<ReaderAadV1, MpcError> {
-    let values = decode_array(bytes)?;
-    require_version(&values)?;
-    require_kind(&values, AadKind::Reader)?;
-    decode_reader(values)
+impl PlaintextCodec {
+    pub fn encode_suint256(value: [u8; 32]) -> Result<Vec<u8>, CodecError> {
+        Self::encode_bytes(value)
+    }
+
+    pub fn encode_sbool(value: bool) -> Result<Vec<u8>, CodecError> {
+        Self::encode_bytes([u8::from(value)])
+    }
+
+    fn encode_bytes<const N: usize>(bytes: [u8; N]) -> Result<Vec<u8>, CodecError> {
+        let mut encoded = Vec::new();
+        ciborium::ser::into_writer(&Value::Bytes(bytes.to_vec()), &mut encoded).map_err(|err| {
+            CodecError::Unprocessable(format!("failed to encode plaintext: {err}"))
+        })?;
+        Ok(encoded)
+    }
 }
 
-pub fn decode_enclave_aad(bytes: &[u8]) -> Result<EnclaveAadV1, MpcError> {
-    let values = decode_array(bytes)?;
-    require_version(&values)?;
-    require_kind(&values, AadKind::Enclave)?;
-    decode_enclave(values)
-}
-
-fn decode_system_input(values: Vec<Value>) -> Result<SystemInputAadV1, MpcError> {
+fn decode_system_input(values: Vec<Value>) -> Result<SystemInputAadV1, CodecError> {
     let values = fixed_len::<7>(values)?;
     Ok(SystemInputAadV1 {
         version: read_u8(&values[0], "version")?,
@@ -176,7 +209,7 @@ fn decode_system_input(values: Vec<Value>) -> Result<SystemInputAadV1, MpcError>
     })
 }
 
-fn decode_system_handle(values: Vec<Value>) -> Result<SystemHandleAadV1, MpcError> {
+fn decode_system_handle(values: Vec<Value>) -> Result<SystemHandleAadV1, CodecError> {
     let values = fixed_len::<7>(values)?;
     Ok(SystemHandleAadV1 {
         version: read_u8(&values[0], "version")?,
@@ -189,7 +222,7 @@ fn decode_system_handle(values: Vec<Value>) -> Result<SystemHandleAadV1, MpcErro
     })
 }
 
-fn decode_enclave(values: Vec<Value>) -> Result<EnclaveAadV1, MpcError> {
+fn decode_enclave(values: Vec<Value>) -> Result<EnclaveAadV1, CodecError> {
     let values = fixed_len::<9>(values)?;
     Ok(EnclaveAadV1 {
         version: read_u8(&values[0], "version")?,
@@ -204,7 +237,7 @@ fn decode_enclave(values: Vec<Value>) -> Result<EnclaveAadV1, MpcError> {
     })
 }
 
-fn decode_reader(values: Vec<Value>) -> Result<ReaderAadV1, MpcError> {
+fn decode_reader(values: Vec<Value>) -> Result<ReaderAadV1, CodecError> {
     let values = fixed_len::<9>(values)?;
     Ok(ReaderAadV1 {
         version: read_u8(&values[0], "version")?,
@@ -219,7 +252,7 @@ fn decode_reader(values: Vec<Value>) -> Result<ReaderAadV1, MpcError> {
     })
 }
 
-fn decode_array(bytes: &[u8]) -> Result<Vec<Value>, MpcError> {
+fn decode_array(bytes: &[u8]) -> Result<Vec<Value>, CodecError> {
     let mut cursor = Cursor::new(bytes);
     let value: Value = ciborium::de::from_reader(&mut cursor)
         .map_err(|err| bad_request(format!("failed to decode aad: {err}")))?;
@@ -241,7 +274,7 @@ fn decode_array(bytes: &[u8]) -> Result<Vec<Value>, MpcError> {
     }
 }
 
-fn require_version(values: &[Value]) -> Result<(), MpcError> {
+fn require_version(values: &[Value]) -> Result<(), CodecError> {
     let version = values
         .first()
         .ok_or_else(|| bad_request("aad array is missing version"))
@@ -252,7 +285,7 @@ fn require_version(values: &[Value]) -> Result<(), MpcError> {
     Ok(())
 }
 
-fn require_kind(values: &[Value], expected: AadKind) -> Result<(), MpcError> {
+fn require_kind(values: &[Value], expected: AadKind) -> Result<(), CodecError> {
     let actual = aad_kind(values)?;
     if actual != expected {
         return Err(bad_request("unexpected aad kind"));
@@ -260,14 +293,14 @@ fn require_kind(values: &[Value], expected: AadKind) -> Result<(), MpcError> {
     Ok(())
 }
 
-fn aad_kind(values: &[Value]) -> Result<AadKind, MpcError> {
+fn aad_kind(values: &[Value]) -> Result<AadKind, CodecError> {
     values
         .get(1)
         .ok_or_else(|| bad_request("aad array is missing kind"))
         .and_then(read_kind)
 }
 
-fn read_kind(value: &Value) -> Result<AadKind, MpcError> {
+fn read_kind(value: &Value) -> Result<AadKind, CodecError> {
     let kind = read_u8(value, "kind")?;
 
     match kind {
@@ -279,7 +312,7 @@ fn read_kind(value: &Value) -> Result<AadKind, MpcError> {
     }
 }
 
-fn fixed_len<const N: usize>(values: Vec<Value>) -> Result<[Value; N], MpcError> {
+fn fixed_len<const N: usize>(values: Vec<Value>) -> Result<[Value; N], CodecError> {
     values.try_into().map_err(|values: Vec<Value>| {
         bad_request(format!(
             "expected aad array length {N}, got {}",
@@ -288,7 +321,7 @@ fn fixed_len<const N: usize>(values: Vec<Value>) -> Result<[Value; N], MpcError>
     })
 }
 
-fn read_u8(value: &Value, field: &str) -> Result<u8, MpcError> {
+fn read_u8(value: &Value, field: &str) -> Result<u8, CodecError> {
     match value {
         Value::Integer(integer) => {
             u8::try_from(*integer).map_err(|_| bad_request(format!("{field} must fit in u8")))
@@ -297,7 +330,7 @@ fn read_u8(value: &Value, field: &str) -> Result<u8, MpcError> {
     }
 }
 
-fn read_u64(value: &Value, field: &str) -> Result<u64, MpcError> {
+fn read_u64(value: &Value, field: &str) -> Result<u64, CodecError> {
     match value {
         Value::Integer(integer) => {
             u64::try_from(*integer).map_err(|_| bad_request(format!("{field} must fit in u64")))
@@ -306,7 +339,7 @@ fn read_u64(value: &Value, field: &str) -> Result<u64, MpcError> {
     }
 }
 
-fn read_bytes<const N: usize>(value: &Value, field: &str) -> Result<[u8; N], MpcError> {
+fn read_bytes<const N: usize>(value: &Value, field: &str) -> Result<[u8; N], CodecError> {
     match value {
         Value::Bytes(bytes) => bytes
             .as_slice()
@@ -316,7 +349,7 @@ fn read_bytes<const N: usize>(value: &Value, field: &str) -> Result<[u8; N], Mpc
     }
 }
 
-fn read_text(value: &Value, field: &str) -> Result<String, MpcError> {
+fn read_text(value: &Value, field: &str) -> Result<String, CodecError> {
     match value {
         Value::Text(text) => Ok(text.clone()),
         _ => Err(bad_request(format!("{field} must be text"))),
@@ -334,17 +367,15 @@ fn bytes(value: &[u8]) -> Value {
     Value::Bytes(value.to_vec())
 }
 
-fn bad_request(message: impl Into<String>) -> MpcError {
-    MpcError::BadRequest(message.into())
+fn bad_request(message: impl Into<String>) -> CodecError {
+    CodecError::BadRequest(message.into())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{
-        Address, AttestationDigest, DomainId, HandleId, KeyId, ReaderId, RequestId,
-    };
     use ciborium::value::Value;
+    use types::{Address, AttestationDigest, DomainId, HandleId, KeyId, ReaderId, RequestId};
 
     #[test]
     fn system_input_aad_round_trips_as_fixed_array() {
@@ -358,9 +389,9 @@ mod tests {
             key_id: KeyId([0x33; 32]),
         };
 
-        let encoded = encode_aad(&Aad::SystemInput(aad.clone())).unwrap();
+        let encoded = AadCodec::encode(&Aad::SystemInput(aad.clone())).unwrap();
         assert_eq!(encoded[0], 0x87);
-        let decoded = decode_source_aad(&encoded).unwrap();
+        let decoded = AadCodec::decode_source(&encoded).unwrap();
         assert_eq!(decoded, SourceAad::SystemInput(aad));
     }
 
@@ -386,7 +417,7 @@ mod tests {
         ]
         .concat();
 
-        let encoded = encode_aad(&Aad::SystemInput(aad)).unwrap();
+        let encoded = AadCodec::encode(&Aad::SystemInput(aad)).unwrap();
         assert_eq!(encoded, expected);
     }
 
@@ -402,9 +433,9 @@ mod tests {
             key_id: KeyId([0x33; 32]),
         };
 
-        let encoded = encode_aad(&Aad::SystemHandle(aad.clone())).unwrap();
+        let encoded = AadCodec::encode(&Aad::SystemHandle(aad.clone())).unwrap();
         assert_eq!(encoded[0], 0x87);
-        let decoded = decode_source_aad(&encoded).unwrap();
+        let decoded = AadCodec::decode_source(&encoded).unwrap();
         assert_eq!(decoded, SourceAad::SystemHandle(aad));
     }
 
@@ -430,7 +461,7 @@ mod tests {
         ]
         .concat();
 
-        let encoded = encode_aad(&Aad::SystemHandle(aad)).unwrap();
+        let encoded = AadCodec::encode(&Aad::SystemHandle(aad)).unwrap();
         assert_eq!(encoded, expected);
     }
 
@@ -448,9 +479,9 @@ mod tests {
             key_id: KeyId([0x55; 32]),
         };
 
-        let encoded = encode_aad(&Aad::Enclave(aad.clone())).unwrap();
+        let encoded = AadCodec::encode(&Aad::Enclave(aad.clone())).unwrap();
         assert_eq!(encoded[0], 0x89);
-        let decoded = decode_enclave_aad(&encoded).unwrap();
+        let decoded = AadCodec::decode_enclave(&encoded).unwrap();
         assert_eq!(decoded, aad);
     }
 
@@ -482,7 +513,7 @@ mod tests {
         ]
         .concat();
 
-        let encoded = encode_aad(&Aad::Enclave(aad)).unwrap();
+        let encoded = AadCodec::encode(&Aad::Enclave(aad)).unwrap();
         assert_eq!(encoded, expected);
     }
 
@@ -500,9 +531,9 @@ mod tests {
             key_id: KeyId([0x55; 32]),
         };
 
-        let encoded = encode_aad(&Aad::Reader(aad.clone())).unwrap();
+        let encoded = AadCodec::encode(&Aad::Reader(aad.clone())).unwrap();
         assert_eq!(encoded[0], 0x89);
-        let decoded = decode_reader_aad(&encoded).unwrap();
+        let decoded = AadCodec::decode_reader(&encoded).unwrap();
         assert_eq!(decoded, aad);
     }
 
@@ -534,7 +565,7 @@ mod tests {
         ]
         .concat();
 
-        let encoded = encode_aad(&Aad::Reader(aad)).unwrap();
+        let encoded = AadCodec::encode(&Aad::Reader(aad)).unwrap();
         assert_eq!(encoded, expected);
     }
 
@@ -547,8 +578,8 @@ mod tests {
         let mut encoded = Vec::new();
         ciborium::ser::into_writer(&value, &mut encoded).unwrap();
 
-        let err = decode_source_aad(&encoded).unwrap_err();
-        assert!(matches!(err, crate::error::MpcError::BadRequest(_)));
+        let err = AadCodec::decode_source(&encoded).unwrap_err();
+        assert!(matches!(err, CodecError::BadRequest(_)));
     }
 
     #[test]
@@ -564,8 +595,8 @@ mod tests {
         ]
         .concat();
 
-        let err = decode_source_aad(&non_canonical).unwrap_err();
-        assert!(matches!(err, crate::error::MpcError::BadRequest(_)));
+        let err = AadCodec::decode_source(&non_canonical).unwrap_err();
+        assert!(matches!(err, CodecError::BadRequest(_)));
     }
 
     #[test]
@@ -577,8 +608,8 @@ mod tests {
         );
         let encoded = encode_value(&value);
 
-        let err = decode_source_aad(&encoded).unwrap_err();
-        assert!(matches!(err, crate::error::MpcError::BadRequest(_)));
+        let err = AadCodec::decode_source(&encoded).unwrap_err();
+        assert!(matches!(err, CodecError::BadRequest(_)));
     }
 
     #[test]
@@ -590,8 +621,8 @@ mod tests {
         ]);
         let encoded = encode_value(&value);
 
-        let err = decode_source_aad(&encoded).unwrap_err();
-        assert!(matches!(err, crate::error::MpcError::BadRequest(_)));
+        let err = AadCodec::decode_source(&encoded).unwrap_err();
+        assert!(matches!(err, CodecError::BadRequest(_)));
     }
 
     #[test]
@@ -603,8 +634,8 @@ mod tests {
         );
         let encoded = encode_value(&value);
 
-        let err = decode_source_aad(&encoded).unwrap_err();
-        assert!(matches!(err, crate::error::MpcError::BadRequest(_)));
+        let err = AadCodec::decode_source(&encoded).unwrap_err();
+        assert!(matches!(err, CodecError::BadRequest(_)));
     }
 
     #[test]
@@ -616,8 +647,8 @@ mod tests {
         );
         let encoded = encode_value(&value);
 
-        let err = decode_source_aad(&encoded).unwrap_err();
-        assert!(matches!(err, crate::error::MpcError::BadRequest(_)));
+        let err = AadCodec::decode_source(&encoded).unwrap_err();
+        assert!(matches!(err, CodecError::BadRequest(_)));
     }
 
     #[test]
@@ -629,8 +660,8 @@ mod tests {
         ));
         encoded.push(0x00);
 
-        let err = decode_source_aad(&encoded).unwrap_err();
-        assert!(matches!(err, crate::error::MpcError::BadRequest(_)));
+        let err = AadCodec::decode_source(&encoded).unwrap_err();
+        assert!(matches!(err, CodecError::BadRequest(_)));
     }
 
     #[test]
@@ -645,8 +676,8 @@ mod tests {
             key_id: KeyId([0x33; 32]),
         };
 
-        let err = encode_aad(&Aad::SystemInput(aad)).unwrap_err();
-        assert!(matches!(err, crate::error::MpcError::BadRequest(_)));
+        let err = AadCodec::encode(&Aad::SystemInput(aad)).unwrap_err();
+        assert!(matches!(err, CodecError::BadRequest(_)));
     }
 
     #[test]
@@ -661,8 +692,8 @@ mod tests {
             key_id: KeyId([0x33; 32]),
         };
 
-        let err = encode_aad(&Aad::SystemHandle(aad)).unwrap_err();
-        assert!(matches!(err, crate::error::MpcError::BadRequest(_)));
+        let err = AadCodec::encode(&Aad::SystemHandle(aad)).unwrap_err();
+        assert!(matches!(err, CodecError::BadRequest(_)));
     }
 
     #[test]
@@ -679,8 +710,24 @@ mod tests {
         let mut encoded = Vec::new();
         ciborium::ser::into_writer(&value, &mut encoded).unwrap();
 
-        let err = decode_source_aad(&encoded).unwrap_err();
-        assert!(matches!(err, crate::error::MpcError::BadRequest(_)));
+        let err = AadCodec::decode_source(&encoded).unwrap_err();
+        assert!(matches!(err, CodecError::BadRequest(_)));
+    }
+
+    #[test]
+    fn plaintext_codec_encodes_canonical_cbor_byte_strings() {
+        assert_eq!(
+            PlaintextCodec::encode_suint256([0x7a; 32]).unwrap(),
+            [vec![0x58, 0x20], vec![0x7a; 32]].concat()
+        );
+        assert_eq!(
+            PlaintextCodec::encode_sbool(true).unwrap(),
+            vec![0x41, 0x01]
+        );
+        assert_eq!(
+            PlaintextCodec::encode_sbool(false).unwrap(),
+            vec![0x41, 0x00]
+        );
     }
 
     fn system_handle_value_with(version: Value, type_tag: Value, domain_id: Vec<u8>) -> Value {

@@ -1,29 +1,41 @@
-use crate::aad::{
-    Aad, EnclaveAadV1, ReaderAadV1, SourceAad, decode_enclave_aad, decode_reader_aad,
-    decode_source_aad, encode_aad,
-};
-use crate::error::MpcError;
-use crate::types::{
-    Attestation, AttestationDigest, EnclaveCiphertextV1, FixedBytes, KeyId, PayloadBytes,
-    ReaderCiphertextV1, ReaderId, SystemCiphertextV1, X25519PublicKey,
-};
 use aes_gcm::{
     Aes256Gcm, Nonce,
     aead::{Aead, KeyInit, Payload},
 };
-use ciborium::value::Value;
+use codec::{Aad, AadCodec, EnclaveAadV1, ReaderAadV1, SourceAad};
 use hpke::rand_core::{CryptoRng as HpkeCryptoRng, RngCore as HpkeRngCore};
 use hpke::{
     Deserializable, Kem as _, OpModeR, OpModeS, Serializable, setup_receiver, setup_sender,
 };
 use rand::{RngCore, rngs::OsRng as RandOsRng};
 use sha3::{Digest, Keccak256};
+use types::{
+    Attestation, AttestationDigest, EnclaveCiphertextV1, FixedBytes, KeyId, PayloadBytes,
+    ReaderCiphertextV1, ReaderId, SystemCiphertextV1, X25519PublicKey,
+};
 
 type HpkeAead = hpke::aead::AesGcm256;
 type HpkeKdf = hpke::kdf::HkdfSha256;
 type HpkeKem = hpke::kem::X25519HkdfSha256;
 
 const HPKE_INFO: &[u8] = b"mpc-hpke-v1";
+
+#[derive(Debug, thiserror::Error)]
+pub enum CryptoError {
+    #[error("malformed request: {0}")]
+    BadRequest(String),
+    #[error("invalid request binding: {0}")]
+    Unprocessable(String),
+}
+
+impl From<codec::CodecError> for CryptoError {
+    fn from(error: codec::CodecError) -> Self {
+        match error {
+            codec::CodecError::BadRequest(message) => Self::BadRequest(message),
+            codec::CodecError::Unprocessable(message) => Self::Unprocessable(message),
+        }
+    }
+}
 
 // hpke 0.13 exposes rand_core 0.9 traits, while this crate depends on rand 0.8.
 // This adapter lets HPKE use rand 0.8's OS RNG without adding another public dependency.
@@ -53,6 +65,45 @@ pub struct HpkeKeypair {
 pub struct OpenedSystemCiphertext {
     pub source_aad: SourceAad,
     pub plaintext: Vec<u8>,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct CipherSuite;
+
+impl CipherSuite {
+    pub fn seal_system_ciphertext(
+        mpc_public_key: &X25519PublicKey,
+        key_id: KeyId,
+        aad: &Aad,
+        plaintext: &[u8],
+    ) -> Result<SystemCiphertextV1, CryptoError> {
+        seal_system_ciphertext(mpc_public_key, key_id, aad, plaintext)
+    }
+
+    pub fn open_system_ciphertext(
+        keypair: &HpkeKeypair,
+        ciphertext: &SystemCiphertextV1,
+    ) -> Result<OpenedSystemCiphertext, CryptoError> {
+        open_system_ciphertext(keypair, ciphertext)
+    }
+
+    pub fn seal_reader_ciphertext(
+        reader_pubkey: X25519PublicKey,
+        key_id: KeyId,
+        aad: ReaderAadV1,
+        plaintext: &[u8],
+    ) -> Result<ReaderCiphertextV1, CryptoError> {
+        seal_reader_ciphertext(reader_pubkey, key_id, aad, plaintext)
+    }
+
+    pub fn seal_enclave_ciphertext(
+        enclave_pubkey: X25519PublicKey,
+        key_id: KeyId,
+        aad: EnclaveAadV1,
+        plaintext: &[u8],
+    ) -> Result<EnclaveCiphertextV1, CryptoError> {
+        seal_enclave_ciphertext(enclave_pubkey, key_id, aad, plaintext)
+    }
 }
 
 impl HpkeKeypair {
@@ -92,7 +143,7 @@ pub fn hpke_seal(
     recipient: X25519PublicKey,
     aad: &[u8],
     plaintext: &[u8],
-) -> Result<(Vec<u8>, Vec<u8>), MpcError> {
+) -> Result<(Vec<u8>, Vec<u8>), CryptoError> {
     let public_key = <HpkeKem as hpke::Kem>::PublicKey::from_bytes(&recipient.0)
         .map_err(|_| unprocessable("invalid recipient public key"))?;
     let mut rng = HpkeOsRng(RandOsRng);
@@ -115,7 +166,7 @@ pub fn hpke_open(
     enc: &[u8],
     aad: &[u8],
     ciphertext: &[u8],
-) -> Result<Vec<u8>, MpcError> {
+) -> Result<Vec<u8>, CryptoError> {
     let encapped_key = <HpkeKem as hpke::Kem>::EncappedKey::from_bytes(enc)
         .map_err(|_| unprocessable("invalid hpke encapped key"))?;
     let mut receiver = setup_receiver::<HpkeAead, HpkeKdf, HpkeKem>(
@@ -136,11 +187,11 @@ pub fn seal_system_ciphertext(
     key_id: KeyId,
     aad: &Aad,
     plaintext: &[u8],
-) -> Result<SystemCiphertextV1, MpcError> {
+) -> Result<SystemCiphertextV1, CryptoError> {
     let aad_key_id = source_aad_key_id_from_aad(aad)?;
     require_matching_key_id(key_id, aad_key_id)?;
 
-    let encoded_aad = encode_aad(aad)?;
+    let encoded_aad = AadCodec::encode(aad)?;
     let mut dek = [0u8; 32];
     let mut nonce = [0u8; 12];
     RandOsRng.fill_bytes(&mut dek);
@@ -162,8 +213,8 @@ pub fn seal_system_ciphertext(
 pub fn open_system_ciphertext(
     keypair: &HpkeKeypair,
     ciphertext: &SystemCiphertextV1,
-) -> Result<OpenedSystemCiphertext, MpcError> {
-    let source_aad = decode_source_aad(&ciphertext.aad.0)?;
+) -> Result<OpenedSystemCiphertext, CryptoError> {
+    let source_aad = AadCodec::decode_source(&ciphertext.aad.0)?;
     require_matching_key_id(ciphertext.key_id, source_aad_key_id(&source_aad))?;
 
     let dek = hpke_open(
@@ -194,9 +245,9 @@ pub fn seal_reader_ciphertext(
     key_id: KeyId,
     aad: ReaderAadV1,
     plaintext: &[u8],
-) -> Result<ReaderCiphertextV1, MpcError> {
+) -> Result<ReaderCiphertextV1, CryptoError> {
     require_matching_key_id(key_id, aad.key_id)?;
-    let encoded_aad = encode_aad(&Aad::Reader(aad))?;
+    let encoded_aad = AadCodec::encode(&Aad::Reader(aad))?;
     let (enc, ciphertext) = hpke_seal(reader_pubkey, &encoded_aad, plaintext)?;
 
     Ok(ReaderCiphertextV1 {
@@ -212,9 +263,9 @@ pub fn seal_enclave_ciphertext(
     key_id: KeyId,
     aad: EnclaveAadV1,
     plaintext: &[u8],
-) -> Result<EnclaveCiphertextV1, MpcError> {
+) -> Result<EnclaveCiphertextV1, CryptoError> {
     require_matching_key_id(key_id, aad.key_id)?;
-    let encoded_aad = encode_aad(&Aad::Enclave(aad))?;
+    let encoded_aad = AadCodec::encode(&Aad::Enclave(aad))?;
     let (enc, ciphertext) = hpke_seal(enclave_pubkey, &encoded_aad, plaintext)?;
 
     Ok(EnclaveCiphertextV1 {
@@ -228,14 +279,14 @@ pub fn seal_enclave_ciphertext(
 pub fn open_reader_ciphertext_for_tests(
     reader_keypair: &HpkeKeypair,
     ciphertext: &ReaderCiphertextV1,
-) -> Result<Vec<u8>, MpcError> {
+) -> Result<Vec<u8>, CryptoError> {
     let plaintext = hpke_open(
         reader_keypair,
         &ciphertext.enc.0,
         &ciphertext.aad.0,
         &ciphertext.ciphertext.0,
     )?;
-    let aad = decode_reader_aad(&ciphertext.aad.0)?;
+    let aad = AadCodec::decode_reader(&ciphertext.aad.0)?;
     require_matching_key_id(ciphertext.key_id, aad.key_id)?;
 
     Ok(plaintext)
@@ -244,25 +295,17 @@ pub fn open_reader_ciphertext_for_tests(
 pub fn open_enclave_ciphertext_for_tests(
     enclave_keypair: &HpkeKeypair,
     ciphertext: &EnclaveCiphertextV1,
-) -> Result<Vec<u8>, MpcError> {
+) -> Result<Vec<u8>, CryptoError> {
     let plaintext = hpke_open(
         enclave_keypair,
         &ciphertext.enc.0,
         &ciphertext.aad.0,
         &ciphertext.ciphertext.0,
     )?;
-    let aad = decode_enclave_aad(&ciphertext.aad.0)?;
+    let aad = AadCodec::decode_enclave(&ciphertext.aad.0)?;
     require_matching_key_id(ciphertext.key_id, aad.key_id)?;
 
     Ok(plaintext)
-}
-
-pub fn encode_plaintext_suint256(value: [u8; 32]) -> Result<Vec<u8>, MpcError> {
-    encode_plaintext_bytes(value)
-}
-
-pub fn encode_plaintext_sbool(value: bool) -> Result<Vec<u8>, MpcError> {
-    encode_plaintext_bytes([u8::from(value)])
 }
 
 fn aes_gcm_encrypt(
@@ -270,7 +313,7 @@ fn aes_gcm_encrypt(
     nonce: &[u8; 12],
     aad: &[u8],
     plaintext: &[u8],
-) -> Result<Vec<u8>, MpcError> {
+) -> Result<Vec<u8>, CryptoError> {
     let cipher =
         Aes256Gcm::new_from_slice(key).map_err(|_| unprocessable("invalid aes-gcm key length"))?;
     cipher
@@ -289,7 +332,7 @@ fn aes_gcm_decrypt(
     nonce: &[u8; 12],
     aad: &[u8],
     ciphertext: &[u8],
-) -> Result<Vec<u8>, MpcError> {
+) -> Result<Vec<u8>, CryptoError> {
     let cipher =
         Aes256Gcm::new_from_slice(key).map_err(|_| unprocessable("invalid aes-gcm key length"))?;
     cipher
@@ -303,18 +346,11 @@ fn aes_gcm_decrypt(
         .map_err(|_| unprocessable("failed to decrypt aes-gcm payload"))
 }
 
-fn encode_plaintext_bytes<const N: usize>(bytes: [u8; N]) -> Result<Vec<u8>, MpcError> {
-    let mut encoded = Vec::new();
-    ciborium::ser::into_writer(&Value::Bytes(bytes.to_vec()), &mut encoded)
-        .map_err(|err| unprocessable(format!("failed to encode plaintext: {err}")))?;
-    Ok(encoded)
-}
-
-fn source_aad_key_id_from_aad(aad: &Aad) -> Result<KeyId, MpcError> {
+fn source_aad_key_id_from_aad(aad: &Aad) -> Result<KeyId, CryptoError> {
     match aad {
         Aad::SystemInput(aad) => Ok(aad.key_id),
         Aad::SystemHandle(aad) => Ok(aad.key_id),
-        Aad::Enclave(_) | Aad::Reader(_) => Err(MpcError::BadRequest(
+        Aad::Enclave(_) | Aad::Reader(_) => Err(CryptoError::BadRequest(
             "system ciphertext aad must be system input or system handle".to_string(),
         )),
     }
@@ -327,7 +363,7 @@ fn source_aad_key_id(aad: &SourceAad) -> KeyId {
     }
 }
 
-fn require_matching_key_id(ciphertext_key_id: KeyId, aad_key_id: KeyId) -> Result<(), MpcError> {
+fn require_matching_key_id(ciphertext_key_id: KeyId, aad_key_id: KeyId) -> Result<(), CryptoError> {
     if ciphertext_key_id != aad_key_id {
         return Err(unprocessable("ciphertext key_id must match aad key_id"));
     }
@@ -335,19 +371,19 @@ fn require_matching_key_id(ciphertext_key_id: KeyId, aad_key_id: KeyId) -> Resul
     Ok(())
 }
 
-fn unprocessable(message: impl Into<String>) -> MpcError {
-    MpcError::Unprocessable(message.into())
+fn unprocessable(message: impl Into<String>) -> CryptoError {
+    CryptoError::Unprocessable(message.into())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::aad::{Aad, AadKind, EnclaveAadV1, ReaderAadV1, SystemHandleAadV1, encode_aad};
-    use crate::types::{
+    use codec::{Aad, AadKind, EnclaveAadV1, PlaintextCodec, ReaderAadV1, SystemHandleAadV1};
+    use sha3::{Digest, Keccak256};
+    use types::{
         Attestation, AttestationDigest, DomainId, HandleId, KeyId, ReaderId, RequestId,
         X25519PublicKey,
     };
-    use sha3::{Digest, Keccak256};
 
     #[test]
     fn reader_id_is_keccak256_of_public_key() {
@@ -387,7 +423,7 @@ mod tests {
             type_tag: "suint256".to_string(),
             key_id: KeyId([3; 32]),
         });
-        let plaintext = encode_plaintext_suint256([9u8; 32]).unwrap();
+        let plaintext = PlaintextCodec::encode_suint256([9u8; 32]).unwrap();
         let ciphertext =
             seal_system_ciphertext(&keypair.public_key, KeyId([3; 32]), &aad, &plaintext).unwrap();
         let opened = open_system_ciphertext(&keypair, &ciphertext).unwrap();
@@ -419,7 +455,7 @@ mod tests {
             attestation_digest: AttestationDigest([4; 32]),
             key_id: KeyId([5; 32]),
         });
-        let plaintext = encode_plaintext_sbool(true).unwrap();
+        let plaintext = PlaintextCodec::encode_sbool(true).unwrap();
 
         assert!(
             seal_system_ciphertext(&keypair.public_key, KeyId([4; 32]), &reader_aad, &plaintext)
@@ -448,12 +484,12 @@ mod tests {
             type_tag: "suint256".to_string(),
             key_id: KeyId([3; 32]),
         });
-        let plaintext = encode_plaintext_suint256([9u8; 32]).unwrap();
+        let plaintext = PlaintextCodec::encode_suint256([9u8; 32]).unwrap();
 
         let err = seal_system_ciphertext(&keypair.public_key, KeyId([4; 32]), &aad, &plaintext)
             .unwrap_err();
 
-        assert!(matches!(err, MpcError::Unprocessable(_)));
+        assert!(matches!(err, CryptoError::Unprocessable(_)));
     }
 
     #[test]
@@ -468,7 +504,7 @@ mod tests {
             type_tag: "suint256".to_string(),
             key_id: KeyId([3; 32]),
         });
-        let plaintext = encode_plaintext_suint256([9u8; 32]).unwrap();
+        let plaintext = PlaintextCodec::encode_suint256([9u8; 32]).unwrap();
         let mut ciphertext =
             seal_system_ciphertext(&keypair.public_key, KeyId([3; 32]), &aad, &plaintext).unwrap();
 
@@ -476,7 +512,7 @@ mod tests {
 
         assert!(matches!(
             open_system_ciphertext(&keypair, &ciphertext),
-            Err(MpcError::Unprocessable(_))
+            Err(CryptoError::Unprocessable(_))
         ));
     }
 
@@ -493,13 +529,13 @@ mod tests {
             type_tag: "suint256".to_string(),
             key_id: KeyId([3; 32]),
         });
-        let plaintext = encode_plaintext_suint256([9u8; 32]).unwrap();
+        let plaintext = PlaintextCodec::encode_suint256([9u8; 32]).unwrap();
         let ciphertext =
             seal_system_ciphertext(&keypair.public_key, KeyId([3; 32]), &aad, &plaintext).unwrap();
 
         assert!(matches!(
             open_system_ciphertext(&wrong_keypair, &ciphertext),
-            Err(MpcError::Unprocessable(_))
+            Err(CryptoError::Unprocessable(_))
         ));
     }
 
@@ -515,14 +551,14 @@ mod tests {
             type_tag: "suint256".to_string(),
             key_id: KeyId([3; 32]),
         });
-        let plaintext = encode_plaintext_suint256([9u8; 32]).unwrap();
+        let plaintext = PlaintextCodec::encode_suint256([9u8; 32]).unwrap();
         let mut ciphertext =
             seal_system_ciphertext(&keypair.public_key, KeyId([3; 32]), &aad, &plaintext).unwrap();
         ciphertext.aad = PayloadBytes(vec![0xff]);
 
         assert!(matches!(
             open_system_ciphertext(&keypair, &ciphertext),
-            Err(MpcError::BadRequest(_))
+            Err(CryptoError::BadRequest(_))
         ));
     }
 
@@ -541,7 +577,7 @@ mod tests {
             type_tag: "sbool".to_string(),
             key_id: KeyId([4; 32]),
         };
-        let plaintext = encode_plaintext_sbool(true).unwrap();
+        let plaintext = PlaintextCodec::encode_sbool(true).unwrap();
 
         let ciphertext =
             seal_reader_ciphertext(reader_keypair.public_key, KeyId([4; 32]), aad, &plaintext)
@@ -568,13 +604,13 @@ mod tests {
             type_tag: "sbool".to_string(),
             key_id: KeyId([4; 32]),
         };
-        let plaintext = encode_plaintext_sbool(true).unwrap();
+        let plaintext = PlaintextCodec::encode_sbool(true).unwrap();
 
         let err =
             seal_reader_ciphertext(reader_keypair.public_key, KeyId([5; 32]), aad, &plaintext)
                 .unwrap_err();
 
-        assert!(matches!(err, MpcError::Unprocessable(_)));
+        assert!(matches!(err, CryptoError::Unprocessable(_)));
     }
 
     #[test]
@@ -591,7 +627,7 @@ mod tests {
             type_tag: "sbool".to_string(),
             key_id: KeyId([4; 32]),
         };
-        let plaintext = encode_plaintext_sbool(true).unwrap();
+        let plaintext = PlaintextCodec::encode_sbool(true).unwrap();
         let mut ciphertext =
             seal_reader_ciphertext(reader_keypair.public_key, KeyId([4; 32]), aad, &plaintext)
                 .unwrap();
@@ -600,7 +636,7 @@ mod tests {
 
         assert!(matches!(
             open_reader_ciphertext_for_tests(&reader_keypair, &ciphertext),
-            Err(MpcError::Unprocessable(_))
+            Err(CryptoError::Unprocessable(_))
         ));
     }
 
@@ -619,7 +655,7 @@ mod tests {
             attestation_digest: AttestationDigest([4; 32]),
             key_id: KeyId([5; 32]),
         };
-        let plaintext = encode_plaintext_suint256([6u8; 32]).unwrap();
+        let plaintext = PlaintextCodec::encode_suint256([6u8; 32]).unwrap();
 
         let ciphertext =
             seal_enclave_ciphertext(enclave_keypair.public_key, KeyId([5; 32]), aad, &plaintext)
@@ -646,13 +682,13 @@ mod tests {
             attestation_digest: AttestationDigest([4; 32]),
             key_id: KeyId([5; 32]),
         };
-        let plaintext = encode_plaintext_suint256([6u8; 32]).unwrap();
+        let plaintext = PlaintextCodec::encode_suint256([6u8; 32]).unwrap();
 
         let err =
             seal_enclave_ciphertext(enclave_keypair.public_key, KeyId([6; 32]), aad, &plaintext)
                 .unwrap_err();
 
-        assert!(matches!(err, MpcError::Unprocessable(_)));
+        assert!(matches!(err, CryptoError::Unprocessable(_)));
     }
 
     #[test]
@@ -669,7 +705,7 @@ mod tests {
             attestation_digest: AttestationDigest([4; 32]),
             key_id: KeyId([5; 32]),
         };
-        let plaintext = encode_plaintext_suint256([6u8; 32]).unwrap();
+        let plaintext = PlaintextCodec::encode_suint256([6u8; 32]).unwrap();
         let mut ciphertext =
             seal_enclave_ciphertext(enclave_keypair.public_key, KeyId([5; 32]), aad, &plaintext)
                 .unwrap();
@@ -678,7 +714,7 @@ mod tests {
 
         assert!(matches!(
             open_enclave_ciphertext_for_tests(&enclave_keypair, &ciphertext),
-            Err(MpcError::Unprocessable(_))
+            Err(CryptoError::Unprocessable(_))
         ));
     }
 
@@ -696,26 +732,16 @@ mod tests {
             type_tag: "sbool".to_string(),
             key_id: KeyId([4; 32]),
         };
-        let expected_aad = encode_aad(&Aad::Reader(aad.clone())).unwrap();
+        let expected_aad = AadCodec::encode(&Aad::Reader(aad.clone())).unwrap();
 
         let ciphertext = seal_reader_ciphertext(
             reader_keypair.public_key,
             KeyId([4; 32]),
             aad,
-            &encode_plaintext_sbool(false).unwrap(),
+            &PlaintextCodec::encode_sbool(false).unwrap(),
         )
         .unwrap();
 
         assert_eq!(ciphertext.aad.0, expected_aad);
-    }
-
-    #[test]
-    fn plaintext_helpers_encode_canonical_cbor_byte_strings() {
-        assert_eq!(
-            encode_plaintext_suint256([0x7a; 32]).unwrap(),
-            [vec![0x58, 0x20], vec![0x7a; 32]].concat()
-        );
-        assert_eq!(encode_plaintext_sbool(true).unwrap(), vec![0x41, 0x01]);
-        assert_eq!(encode_plaintext_sbool(false).unwrap(), vec![0x41, 0x00]);
     }
 }

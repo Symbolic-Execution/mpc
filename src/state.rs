@@ -1,12 +1,12 @@
 use crate::attestation::{AttestationVerifier, LocalAttestationVerifier};
-use crate::crypto::HpkeKeypair;
 use crate::error::MpcError;
-use crate::types::{
+use crypto::HpkeKeypair;
+use std::collections::HashMap;
+use std::sync::{Arc, RwLock};
+use types::{
     Attestation, CiphertextSuite, DomainId, EnclaveMeasurement, KeyId, MpcConfigResponse, ReaderId,
     ReaderKeyAlgorithm, X25519PublicKey,
 };
-use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -58,7 +58,7 @@ impl AppState {
         reader_id: ReaderId,
         pubkey: X25519PublicKey,
     ) -> Result<(), MpcError> {
-        if reader_id != crate::crypto::reader_id(pubkey) {
+        if reader_id != crypto::reader_id(pubkey) {
             return Err(MpcError::Conflict(
                 "reader_id does not match reader_pubkey".to_string(),
             ));
@@ -140,7 +140,7 @@ impl AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::crypto::reader_id;
+    use crypto::reader_id;
 
     #[test]
     fn reader_registration_is_idempotent() {
