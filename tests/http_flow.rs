@@ -4,7 +4,7 @@ use axum::http::{Method, Request, Response, StatusCode};
 use codec::{Aad, AadKind, PlaintextCodec, SystemHandleAadV1, SystemInputAadV1};
 use mpc::api::router;
 use mpc::attestation::LocalAttestationVerifier;
-use mpc::crypto::{
+use crypto::{
     HpkeKeypair, open_enclave_ciphertext_for_tests, open_reader_ciphertext_for_tests, reader_id,
     seal_system_ciphertext,
 };

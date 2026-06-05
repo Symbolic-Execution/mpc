@@ -1,4 +1,4 @@
-use crate::crypto::{
+use crypto::{
     attestation_digest, open_system_ciphertext, seal_enclave_ciphertext, seal_reader_ciphertext,
 };
 use crate::error::MpcError;
@@ -159,7 +159,7 @@ fn source_context(source: &SourceAad) -> SourceContext {
 mod tests {
     use super::*;
     use crate::attestation::LocalAttestationVerifier;
-    use crate::crypto::{
+    use crypto::{
         HpkeKeypair, attestation_digest, open_enclave_ciphertext_for_tests,
         open_reader_ciphertext_for_tests, reader_id, seal_system_ciphertext,
     };

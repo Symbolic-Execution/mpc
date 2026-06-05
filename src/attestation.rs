@@ -1,4 +1,4 @@
-use crate::crypto::keccak256;
+use crypto::keccak256;
 use crate::error::MpcError;
 use types::{Attestation, EnclaveMeasurement, X25519PublicKey};
 

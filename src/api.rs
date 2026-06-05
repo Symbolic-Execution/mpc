@@ -70,7 +70,7 @@ fn parse_reader_id(value: &str) -> Result<ReaderId, MpcError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::crypto::reader_id;
+    use crypto::reader_id;
     use crate::state::AppState;
     use axum::body::{self, Body};
     use axum::http::{Request, StatusCode};

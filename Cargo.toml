@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [workspace]
-members = ["crates/codec", "crates/types"]
+members = ["crates/codec", "crates/crypto", "crates/types"]
 resolver = "3"
 
 [dependencies]
@@ -14,6 +14,7 @@ axum = "0.8.4"
 base64 = "0.22.1"
 ciborium = "0.2.2"
 codec = { path = "crates/codec" }
+crypto = { path = "crates/crypto" }
 hex = "0.4"
 hpke = { version = "0.13.0", features = ["std", "x25519"] }
 rand = "0.8"
