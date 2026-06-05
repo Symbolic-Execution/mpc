@@ -211,6 +211,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "codec"
+version = "0.1.0"
+dependencies = [
+ "ciborium",
+ "thiserror",
+ "types",
+]
+
+[[package]]
 name = "const-oid"
 version = "0.9.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -664,6 +673,7 @@ dependencies = [
  "axum",
  "base64",
  "ciborium",
+ "codec",
  "hex",
  "hpke",
  "rand",

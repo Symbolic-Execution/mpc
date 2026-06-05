@@ -1,0 +1,9 @@
+[package]
+name = "codec"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ciborium = "0.2.2"
+thiserror = "2"
+types = { path = "../types" }

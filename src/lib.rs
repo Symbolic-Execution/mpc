@@ -1,4 +1,3 @@
-pub mod aad;
 pub mod api;
 pub mod attestation;
 pub mod crypto;

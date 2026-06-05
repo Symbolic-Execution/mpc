@@ -1,12 +1,12 @@
 use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::http::{Method, Request, Response, StatusCode};
-use mpc::aad::{Aad, AadKind, SystemHandleAadV1, SystemInputAadV1};
+use codec::{Aad, AadKind, PlaintextCodec, SystemHandleAadV1, SystemInputAadV1};
 use mpc::api::router;
 use mpc::attestation::LocalAttestationVerifier;
 use mpc::crypto::{
-    HpkeKeypair, encode_plaintext_suint256, open_enclave_ciphertext_for_tests,
-    open_reader_ciphertext_for_tests, reader_id, seal_system_ciphertext,
+    HpkeKeypair, open_enclave_ciphertext_for_tests, open_reader_ciphertext_for_tests, reader_id,
+    seal_system_ciphertext,
 };
 use mpc::state::AppState;
 use serde::de::DeserializeOwned;
@@ -84,7 +84,7 @@ fn system_handle_ciphertext(
         type_tag: "suint256".to_string(),
         key_id: state.config().key_id,
     };
-    let plaintext = encode_plaintext_suint256(plaintext_value).unwrap();
+    let plaintext = PlaintextCodec::encode_suint256(plaintext_value).unwrap();
     let ciphertext = seal_system_ciphertext(
         &state.config().hpke_public_key,
         state.config().key_id,
@@ -109,7 +109,7 @@ fn system_input_ciphertext(
         type_tag: "suint256".to_string(),
         key_id: state.config().key_id,
     };
-    let plaintext = encode_plaintext_suint256(plaintext_value).unwrap();
+    let plaintext = PlaintextCodec::encode_suint256(plaintext_value).unwrap();
     let ciphertext = seal_system_ciphertext(
         &state.config().hpke_public_key,
         state.config().key_id,

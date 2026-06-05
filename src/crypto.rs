@@ -1,23 +1,19 @@
-use crate::aad::{
-    Aad, EnclaveAadV1, ReaderAadV1, SourceAad, decode_enclave_aad, decode_reader_aad,
-    decode_source_aad, encode_aad,
-};
 use crate::error::MpcError;
-use types::{
-    Attestation, AttestationDigest, EnclaveCiphertextV1, FixedBytes, KeyId, PayloadBytes,
-    ReaderCiphertextV1, ReaderId, SystemCiphertextV1, X25519PublicKey,
-};
 use aes_gcm::{
     Aes256Gcm, Nonce,
     aead::{Aead, KeyInit, Payload},
 };
-use ciborium::value::Value;
+use codec::{Aad, AadCodec, EnclaveAadV1, ReaderAadV1, SourceAad};
 use hpke::rand_core::{CryptoRng as HpkeCryptoRng, RngCore as HpkeRngCore};
 use hpke::{
     Deserializable, Kem as _, OpModeR, OpModeS, Serializable, setup_receiver, setup_sender,
 };
 use rand::{RngCore, rngs::OsRng as RandOsRng};
 use sha3::{Digest, Keccak256};
+use types::{
+    Attestation, AttestationDigest, EnclaveCiphertextV1, FixedBytes, KeyId, PayloadBytes,
+    ReaderCiphertextV1, ReaderId, SystemCiphertextV1, X25519PublicKey,
+};
 
 type HpkeAead = hpke::aead::AesGcm256;
 type HpkeKdf = hpke::kdf::HkdfSha256;
@@ -140,7 +136,7 @@ pub fn seal_system_ciphertext(
     let aad_key_id = source_aad_key_id_from_aad(aad)?;
     require_matching_key_id(key_id, aad_key_id)?;
 
-    let encoded_aad = encode_aad(aad)?;
+    let encoded_aad = AadCodec::encode(aad)?;
     let mut dek = [0u8; 32];
     let mut nonce = [0u8; 12];
     RandOsRng.fill_bytes(&mut dek);
@@ -163,7 +159,7 @@ pub fn open_system_ciphertext(
     keypair: &HpkeKeypair,
     ciphertext: &SystemCiphertextV1,
 ) -> Result<OpenedSystemCiphertext, MpcError> {
-    let source_aad = decode_source_aad(&ciphertext.aad.0)?;
+    let source_aad = AadCodec::decode_source(&ciphertext.aad.0)?;
     require_matching_key_id(ciphertext.key_id, source_aad_key_id(&source_aad))?;
 
     let dek = hpke_open(
@@ -196,7 +192,7 @@ pub fn seal_reader_ciphertext(
     plaintext: &[u8],
 ) -> Result<ReaderCiphertextV1, MpcError> {
     require_matching_key_id(key_id, aad.key_id)?;
-    let encoded_aad = encode_aad(&Aad::Reader(aad))?;
+    let encoded_aad = AadCodec::encode(&Aad::Reader(aad))?;
     let (enc, ciphertext) = hpke_seal(reader_pubkey, &encoded_aad, plaintext)?;
 
     Ok(ReaderCiphertextV1 {
@@ -214,7 +210,7 @@ pub fn seal_enclave_ciphertext(
     plaintext: &[u8],
 ) -> Result<EnclaveCiphertextV1, MpcError> {
     require_matching_key_id(key_id, aad.key_id)?;
-    let encoded_aad = encode_aad(&Aad::Enclave(aad))?;
+    let encoded_aad = AadCodec::encode(&Aad::Enclave(aad))?;
     let (enc, ciphertext) = hpke_seal(enclave_pubkey, &encoded_aad, plaintext)?;
 
     Ok(EnclaveCiphertextV1 {
@@ -235,7 +231,7 @@ pub fn open_reader_ciphertext_for_tests(
         &ciphertext.aad.0,
         &ciphertext.ciphertext.0,
     )?;
-    let aad = decode_reader_aad(&ciphertext.aad.0)?;
+    let aad = AadCodec::decode_reader(&ciphertext.aad.0)?;
     require_matching_key_id(ciphertext.key_id, aad.key_id)?;
 
     Ok(plaintext)
@@ -251,18 +247,10 @@ pub fn open_enclave_ciphertext_for_tests(
         &ciphertext.aad.0,
         &ciphertext.ciphertext.0,
     )?;
-    let aad = decode_enclave_aad(&ciphertext.aad.0)?;
+    let aad = AadCodec::decode_enclave(&ciphertext.aad.0)?;
     require_matching_key_id(ciphertext.key_id, aad.key_id)?;
 
     Ok(plaintext)
-}
-
-pub fn encode_plaintext_suint256(value: [u8; 32]) -> Result<Vec<u8>, MpcError> {
-    encode_plaintext_bytes(value)
-}
-
-pub fn encode_plaintext_sbool(value: bool) -> Result<Vec<u8>, MpcError> {
-    encode_plaintext_bytes([u8::from(value)])
 }
 
 fn aes_gcm_encrypt(
@@ -303,13 +291,6 @@ fn aes_gcm_decrypt(
         .map_err(|_| unprocessable("failed to decrypt aes-gcm payload"))
 }
 
-fn encode_plaintext_bytes<const N: usize>(bytes: [u8; N]) -> Result<Vec<u8>, MpcError> {
-    let mut encoded = Vec::new();
-    ciborium::ser::into_writer(&Value::Bytes(bytes.to_vec()), &mut encoded)
-        .map_err(|err| unprocessable(format!("failed to encode plaintext: {err}")))?;
-    Ok(encoded)
-}
-
 fn source_aad_key_id_from_aad(aad: &Aad) -> Result<KeyId, MpcError> {
     match aad {
         Aad::SystemInput(aad) => Ok(aad.key_id),
@@ -342,12 +323,12 @@ fn unprocessable(message: impl Into<String>) -> MpcError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::aad::{Aad, AadKind, EnclaveAadV1, ReaderAadV1, SystemHandleAadV1, encode_aad};
+    use codec::{Aad, AadKind, EnclaveAadV1, PlaintextCodec, ReaderAadV1, SystemHandleAadV1};
+    use sha3::{Digest, Keccak256};
     use types::{
         Attestation, AttestationDigest, DomainId, HandleId, KeyId, ReaderId, RequestId,
         X25519PublicKey,
     };
-    use sha3::{Digest, Keccak256};
 
     #[test]
     fn reader_id_is_keccak256_of_public_key() {
@@ -387,7 +368,7 @@ mod tests {
             type_tag: "suint256".to_string(),
             key_id: KeyId([3; 32]),
         });
-        let plaintext = encode_plaintext_suint256([9u8; 32]).unwrap();
+        let plaintext = PlaintextCodec::encode_suint256([9u8; 32]).unwrap();
         let ciphertext =
             seal_system_ciphertext(&keypair.public_key, KeyId([3; 32]), &aad, &plaintext).unwrap();
         let opened = open_system_ciphertext(&keypair, &ciphertext).unwrap();
@@ -419,7 +400,7 @@ mod tests {
             attestation_digest: AttestationDigest([4; 32]),
             key_id: KeyId([5; 32]),
         });
-        let plaintext = encode_plaintext_sbool(true).unwrap();
+        let plaintext = PlaintextCodec::encode_sbool(true).unwrap();
 
         assert!(
             seal_system_ciphertext(&keypair.public_key, KeyId([4; 32]), &reader_aad, &plaintext)
@@ -448,7 +429,7 @@ mod tests {
             type_tag: "suint256".to_string(),
             key_id: KeyId([3; 32]),
         });
-        let plaintext = encode_plaintext_suint256([9u8; 32]).unwrap();
+        let plaintext = PlaintextCodec::encode_suint256([9u8; 32]).unwrap();
 
         let err = seal_system_ciphertext(&keypair.public_key, KeyId([4; 32]), &aad, &plaintext)
             .unwrap_err();
@@ -468,7 +449,7 @@ mod tests {
             type_tag: "suint256".to_string(),
             key_id: KeyId([3; 32]),
         });
-        let plaintext = encode_plaintext_suint256([9u8; 32]).unwrap();
+        let plaintext = PlaintextCodec::encode_suint256([9u8; 32]).unwrap();
         let mut ciphertext =
             seal_system_ciphertext(&keypair.public_key, KeyId([3; 32]), &aad, &plaintext).unwrap();
 
@@ -493,7 +474,7 @@ mod tests {
             type_tag: "suint256".to_string(),
             key_id: KeyId([3; 32]),
         });
-        let plaintext = encode_plaintext_suint256([9u8; 32]).unwrap();
+        let plaintext = PlaintextCodec::encode_suint256([9u8; 32]).unwrap();
         let ciphertext =
             seal_system_ciphertext(&keypair.public_key, KeyId([3; 32]), &aad, &plaintext).unwrap();
 
@@ -515,7 +496,7 @@ mod tests {
             type_tag: "suint256".to_string(),
             key_id: KeyId([3; 32]),
         });
-        let plaintext = encode_plaintext_suint256([9u8; 32]).unwrap();
+        let plaintext = PlaintextCodec::encode_suint256([9u8; 32]).unwrap();
         let mut ciphertext =
             seal_system_ciphertext(&keypair.public_key, KeyId([3; 32]), &aad, &plaintext).unwrap();
         ciphertext.aad = PayloadBytes(vec![0xff]);
@@ -541,7 +522,7 @@ mod tests {
             type_tag: "sbool".to_string(),
             key_id: KeyId([4; 32]),
         };
-        let plaintext = encode_plaintext_sbool(true).unwrap();
+        let plaintext = PlaintextCodec::encode_sbool(true).unwrap();
 
         let ciphertext =
             seal_reader_ciphertext(reader_keypair.public_key, KeyId([4; 32]), aad, &plaintext)
@@ -568,7 +549,7 @@ mod tests {
             type_tag: "sbool".to_string(),
             key_id: KeyId([4; 32]),
         };
-        let plaintext = encode_plaintext_sbool(true).unwrap();
+        let plaintext = PlaintextCodec::encode_sbool(true).unwrap();
 
         let err =
             seal_reader_ciphertext(reader_keypair.public_key, KeyId([5; 32]), aad, &plaintext)
@@ -591,7 +572,7 @@ mod tests {
             type_tag: "sbool".to_string(),
             key_id: KeyId([4; 32]),
         };
-        let plaintext = encode_plaintext_sbool(true).unwrap();
+        let plaintext = PlaintextCodec::encode_sbool(true).unwrap();
         let mut ciphertext =
             seal_reader_ciphertext(reader_keypair.public_key, KeyId([4; 32]), aad, &plaintext)
                 .unwrap();
@@ -619,7 +600,7 @@ mod tests {
             attestation_digest: AttestationDigest([4; 32]),
             key_id: KeyId([5; 32]),
         };
-        let plaintext = encode_plaintext_suint256([6u8; 32]).unwrap();
+        let plaintext = PlaintextCodec::encode_suint256([6u8; 32]).unwrap();
 
         let ciphertext =
             seal_enclave_ciphertext(enclave_keypair.public_key, KeyId([5; 32]), aad, &plaintext)
@@ -646,7 +627,7 @@ mod tests {
             attestation_digest: AttestationDigest([4; 32]),
             key_id: KeyId([5; 32]),
         };
-        let plaintext = encode_plaintext_suint256([6u8; 32]).unwrap();
+        let plaintext = PlaintextCodec::encode_suint256([6u8; 32]).unwrap();
 
         let err =
             seal_enclave_ciphertext(enclave_keypair.public_key, KeyId([6; 32]), aad, &plaintext)
@@ -669,7 +650,7 @@ mod tests {
             attestation_digest: AttestationDigest([4; 32]),
             key_id: KeyId([5; 32]),
         };
-        let plaintext = encode_plaintext_suint256([6u8; 32]).unwrap();
+        let plaintext = PlaintextCodec::encode_suint256([6u8; 32]).unwrap();
         let mut ciphertext =
             seal_enclave_ciphertext(enclave_keypair.public_key, KeyId([5; 32]), aad, &plaintext)
                 .unwrap();
@@ -696,26 +677,16 @@ mod tests {
             type_tag: "sbool".to_string(),
             key_id: KeyId([4; 32]),
         };
-        let expected_aad = encode_aad(&Aad::Reader(aad.clone())).unwrap();
+        let expected_aad = AadCodec::encode(&Aad::Reader(aad.clone())).unwrap();
 
         let ciphertext = seal_reader_ciphertext(
             reader_keypair.public_key,
             KeyId([4; 32]),
             aad,
-            &encode_plaintext_sbool(false).unwrap(),
+            &PlaintextCodec::encode_sbool(false).unwrap(),
         )
         .unwrap();
 
         assert_eq!(ciphertext.aad.0, expected_aad);
-    }
-
-    #[test]
-    fn plaintext_helpers_encode_canonical_cbor_byte_strings() {
-        assert_eq!(
-            encode_plaintext_suint256([0x7a; 32]).unwrap(),
-            [vec![0x58, 0x20], vec![0x7a; 32]].concat()
-        );
-        assert_eq!(encode_plaintext_sbool(true).unwrap(), vec![0x41, 0x01]);
-        assert_eq!(encode_plaintext_sbool(false).unwrap(), vec![0x41, 0x00]);
     }
 }

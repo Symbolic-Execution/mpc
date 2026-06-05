@@ -1,12 +1,12 @@
 use crate::attestation::{AttestationVerifier, LocalAttestationVerifier};
 use crate::crypto::HpkeKeypair;
 use crate::error::MpcError;
+use std::collections::HashMap;
+use std::sync::{Arc, RwLock};
 use types::{
     Attestation, CiphertextSuite, DomainId, EnclaveMeasurement, KeyId, MpcConfigResponse, ReaderId,
     ReaderKeyAlgorithm, X25519PublicKey,
 };
-use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
 
 #[derive(Clone)]
 pub struct AppState {

@@ -1,13 +1,13 @@
 use crate::error::MpcError;
 use crate::state::AppState;
-use types::{
-    PutReaderRequest, PutReaderResponse, ReaderId, ToEnclaveRequest, ToEnclaveResponse,
-    ToReaderRequest, ToReaderResponse,
-};
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{FromRequest, Path, State};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
+use types::{
+    PutReaderRequest, PutReaderResponse, ReaderId, ToEnclaveRequest, ToEnclaveResponse,
+    ToReaderRequest, ToReaderResponse,
+};
 
 pub fn router(state: AppState) -> Router {
     Router::new()
@@ -18,9 +18,7 @@ pub fn router(state: AppState) -> Router {
         .with_state(state)
 }
 
-async fn get_config_handler(
-    State(state): State<AppState>,
-) -> Json<types::MpcConfigResponse> {
+async fn get_config_handler(State(state): State<AppState>) -> Json<types::MpcConfigResponse> {
     Json(crate::service::get_config(&state))
 }
 
@@ -74,10 +72,10 @@ mod tests {
     use super::*;
     use crate::crypto::reader_id;
     use crate::state::AppState;
-    use types::X25519PublicKey;
     use axum::body::{self, Body};
     use axum::http::{Request, StatusCode};
     use tower::ServiceExt;
+    use types::X25519PublicKey;
 
     #[tokio::test]
     async fn get_config_returns_json() {

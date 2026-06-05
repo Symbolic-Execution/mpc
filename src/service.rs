@@ -1,9 +1,9 @@
-use crate::aad::{AadKind, EnclaveAadV1, ReaderAadV1, SourceAad};
 use crate::crypto::{
     attestation_digest, open_system_ciphertext, seal_enclave_ciphertext, seal_reader_ciphertext,
 };
 use crate::error::MpcError;
 use crate::state::AppState;
+use codec::{AadKind, EnclaveAadV1, ReaderAadV1, SourceAad};
 use types::{
     DomainId, HandleId, KeyId, MpcConfigResponse, PutReaderRequest, PutReaderResponse, ReaderId,
     ToEnclaveRequest, ToEnclaveResponse, ToReaderRequest, ToReaderResponse,
@@ -158,18 +158,17 @@ fn source_context(source: &SourceAad) -> SourceContext {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::aad::{
-        Aad, AadKind, EnclaveAadV1, ReaderAadV1, SystemHandleAadV1, SystemInputAadV1,
-        decode_enclave_aad, decode_reader_aad,
-    };
     use crate::attestation::LocalAttestationVerifier;
     use crate::crypto::{
-        HpkeKeypair, attestation_digest, encode_plaintext_suint256,
-        open_enclave_ciphertext_for_tests, open_reader_ciphertext_for_tests, reader_id,
-        seal_system_ciphertext,
+        HpkeKeypair, attestation_digest, open_enclave_ciphertext_for_tests,
+        open_reader_ciphertext_for_tests, reader_id, seal_system_ciphertext,
     };
     use crate::error::MpcError;
     use crate::state::AppState;
+    use codec::{
+        Aad, AadCodec, AadKind, EnclaveAadV1, PlaintextCodec, ReaderAadV1, SystemHandleAadV1,
+        SystemInputAadV1,
+    };
     use types::{
         Address, Attestation, EnclaveMeasurement, HandleId, KeyId, PutReaderRequest, ReaderId,
         RequestId, ToEnclaveRequest, ToReaderRequest,
@@ -205,7 +204,7 @@ mod tests {
         state: &AppState,
         handle_id: HandleId,
     ) -> (types::SystemCiphertextV1, Vec<u8>) {
-        let plaintext = encode_plaintext_suint256([0x99; 32]).unwrap();
+        let plaintext = PlaintextCodec::encode_suint256([0x99; 32]).unwrap();
         let aad = Aad::SystemHandle(SystemHandleAadV1 {
             version: 1,
             kind: AadKind::SystemHandle,
@@ -227,7 +226,7 @@ mod tests {
     }
 
     fn system_input_ciphertext(state: &AppState) -> (types::SystemCiphertextV1, Vec<u8>) {
-        let plaintext = encode_plaintext_suint256([0xaa; 32]).unwrap();
+        let plaintext = PlaintextCodec::encode_suint256([0xaa; 32]).unwrap();
         let aad = Aad::SystemInput(SystemInputAadV1 {
             version: 1,
             kind: AadKind::SystemInput,
@@ -336,7 +335,7 @@ mod tests {
             plaintext
         );
         assert_eq!(
-            decode_reader_aad(&response.ciphertext.aad.0).unwrap(),
+            AadCodec::decode_reader(&response.ciphertext.aad.0).unwrap(),
             ReaderAadV1 {
                 version: 1,
                 kind: AadKind::Reader,
@@ -440,7 +439,7 @@ mod tests {
             plaintext
         );
         assert_eq!(
-            decode_enclave_aad(&response.ciphertext.aad.0).unwrap(),
+            AadCodec::decode_enclave(&response.ciphertext.aad.0).unwrap(),
             EnclaveAadV1 {
                 version: 1,
                 kind: AadKind::Enclave,

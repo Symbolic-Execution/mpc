@@ -50,6 +50,15 @@ impl MpcError {
     }
 }
 
+impl From<codec::CodecError> for MpcError {
+    fn from(error: codec::CodecError) -> Self {
+        match error {
+            codec::CodecError::BadRequest(message) => Self::BadRequest(message),
+            codec::CodecError::Unprocessable(message) => Self::Unprocessable(message),
+        }
+    }
+}
+
 impl IntoResponse for MpcError {
     fn into_response(self) -> Response {
         let status = self.status_code();
