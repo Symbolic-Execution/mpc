@@ -5,8 +5,8 @@ use crate::crypto::{
 use crate::error::MpcError;
 use crate::state::AppState;
 use crate::types::{
-    MpcConfigResponse, PutReaderRequest, PutReaderResponse, ReaderId, ToEnclaveRequest,
-    ToEnclaveResponse, ToReaderRequest, ToReaderResponse,
+    DomainId, HandleId, KeyId, MpcConfigResponse, PutReaderRequest, PutReaderResponse, ReaderId,
+    ToEnclaveRequest, ToEnclaveResponse, ToReaderRequest, ToReaderResponse,
 };
 
 pub fn get_config(state: &AppState) -> MpcConfigResponse {
@@ -28,19 +28,17 @@ pub fn to_reader(state: &AppState, request: ToReaderRequest) -> Result<ToReaderR
     require_active_system_key(state, request.system_ciphertext.key_id)?;
 
     let opened = open_system_ciphertext(state.keypair(), &request.system_ciphertext)?;
-    let source = match opened.source_aad {
-        SourceAad::SystemHandle(source) => source,
-        SourceAad::SystemInput(_) => {
-            return Err(unprocessable(
-                "to-reader requires handle-bound system ciphertext",
-            ));
-        }
+    let source = source_context(&opened.source_aad);
+    let Some(source_handle_id) = source.handle_id else {
+        return Err(unprocessable(
+            "to-reader requires handle-bound system ciphertext",
+        ));
     };
 
     if request.chain_id != source.chain_id {
         return Err(unprocessable("request chain_id does not match source aad"));
     }
-    if request.handle_id != source.handle_id {
+    if request.handle_id != source_handle_id {
         return Err(unprocessable("request handle_id does not match source aad"));
     }
 
@@ -73,27 +71,12 @@ pub fn to_enclave(
     require_active_system_key(state, request.system_ciphertext.key_id)?;
 
     let opened = open_system_ciphertext(state.keypair(), &request.system_ciphertext)?;
-    let (chain_id, domain_id, type_tag, key_id, source_handle_id) = match opened.source_aad {
-        SourceAad::SystemInput(source) => (
-            source.chain_id,
-            source.domain_id,
-            source.type_tag,
-            source.key_id,
-            None,
-        ),
-        SourceAad::SystemHandle(source) => (
-            source.chain_id,
-            source.domain_id,
-            source.type_tag,
-            source.key_id,
-            Some(source.handle_id),
-        ),
-    };
+    let source = source_context(&opened.source_aad);
 
-    if request.chain_id != chain_id {
+    if request.chain_id != source.chain_id {
         return Err(unprocessable("request chain_id does not match source aad"));
     }
-    if let Some(source_handle_id) = source_handle_id
+    if let Some(source_handle_id) = source.handle_id
         && request.handle_id != source_handle_id
     {
         return Err(unprocessable("request handle_id does not match source aad"));
@@ -114,29 +97,26 @@ pub fn to_enclave(
     let enclave_aad = EnclaveAadV1 {
         version: 1,
         kind: AadKind::Enclave,
-        chain_id,
-        domain_id,
+        chain_id: source.chain_id,
+        domain_id: source.domain_id,
         request_id: request.request_id,
         handle_id: request.handle_id,
-        type_tag,
+        type_tag: source.type_tag,
         attestation_digest: attestation_digest(&request.attestation),
-        key_id,
+        key_id: source.key_id,
     };
 
     Ok(ToEnclaveResponse {
         ciphertext: seal_enclave_ciphertext(
             request.enclave_pubkey,
-            key_id,
+            source.key_id,
             enclave_aad,
             &opened.plaintext,
         )?,
     })
 }
 
-fn require_active_system_key(
-    state: &AppState,
-    ciphertext_key_id: crate::types::KeyId,
-) -> Result<(), MpcError> {
+fn require_active_system_key(state: &AppState, ciphertext_key_id: KeyId) -> Result<(), MpcError> {
     if ciphertext_key_id != state.config().key_id {
         return Err(MpcError::NotFound("system key not found".to_string()));
     }
@@ -148,14 +128,45 @@ fn unprocessable(message: impl Into<String>) -> MpcError {
     MpcError::Unprocessable(message.into())
 }
 
+struct SourceContext {
+    chain_id: u64,
+    domain_id: DomainId,
+    handle_id: Option<HandleId>,
+    type_tag: String,
+    key_id: KeyId,
+}
+
+fn source_context(source: &SourceAad) -> SourceContext {
+    match source {
+        SourceAad::SystemInput(source) => SourceContext {
+            chain_id: source.chain_id,
+            domain_id: source.domain_id,
+            handle_id: None,
+            type_tag: source.type_tag.clone(),
+            key_id: source.key_id,
+        },
+        SourceAad::SystemHandle(source) => SourceContext {
+            chain_id: source.chain_id,
+            domain_id: source.domain_id,
+            handle_id: Some(source.handle_id),
+            type_tag: source.type_tag.clone(),
+            key_id: source.key_id,
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::aad::{Aad, AadKind, SystemHandleAadV1, SystemInputAadV1};
+    use crate::aad::{
+        Aad, AadKind, EnclaveAadV1, ReaderAadV1, SystemHandleAadV1, SystemInputAadV1,
+        decode_enclave_aad, decode_reader_aad,
+    };
     use crate::attestation::LocalAttestationVerifier;
     use crate::crypto::{
-        HpkeKeypair, encode_plaintext_suint256, open_enclave_ciphertext_for_tests,
-        open_reader_ciphertext_for_tests, reader_id, seal_system_ciphertext,
+        HpkeKeypair, attestation_digest, encode_plaintext_suint256,
+        open_enclave_ciphertext_for_tests, open_reader_ciphertext_for_tests, reader_id,
+        seal_system_ciphertext,
     };
     use crate::error::MpcError;
     use crate::state::AppState;
@@ -304,13 +315,14 @@ mod tests {
         let state = AppState::local_deterministic_for_tests();
         let reader = register_reader_for_tests(&state);
         let reader_id = reader_id(reader.public_key);
+        let request_id = RequestId([0x66; 32]);
         let handle_id = HandleId([0x44; 32]);
         let (system_ciphertext, plaintext) = system_handle_ciphertext(&state, handle_id);
 
         let response = to_reader(
             &state,
             ToReaderRequest {
-                request_id: RequestId([0x66; 32]),
+                request_id,
                 chain_id: state.config().chain_id,
                 handle_id,
                 reader_id,
@@ -322,6 +334,20 @@ mod tests {
         assert_eq!(
             open_reader_ciphertext_for_tests(&reader, &response.ciphertext).unwrap(),
             plaintext
+        );
+        assert_eq!(
+            decode_reader_aad(&response.ciphertext.aad.0).unwrap(),
+            ReaderAadV1 {
+                version: 1,
+                kind: AadKind::Reader,
+                chain_id: state.config().chain_id,
+                domain_id: state.config().domain_id,
+                request_id,
+                handle_id,
+                reader_id,
+                type_tag: "suint256".to_string(),
+                key_id: state.config().key_id,
+            }
         );
     }
 
@@ -389,21 +415,21 @@ mod tests {
         let state = AppState::local_deterministic_for_tests();
         let enclave = HpkeKeypair::from_seed_for_tests([10; 32]);
         let measurement = state.config().approved_enclave_measurement;
+        let request_id = RequestId([0x77; 32]);
         let handle_id = HandleId([0x44; 32]);
+        let attestation =
+            LocalAttestationVerifier::attestation_for_tests(enclave.public_key, measurement);
         let (system_ciphertext, plaintext) = system_handle_ciphertext(&state, handle_id);
 
         let response = to_enclave(
             &state,
             ToEnclaveRequest {
-                request_id: RequestId([0x77; 32]),
+                request_id,
                 chain_id: state.config().chain_id,
                 handle_id,
                 enclave_pubkey: enclave.public_key,
                 measurement,
-                attestation: LocalAttestationVerifier::attestation_for_tests(
-                    enclave.public_key,
-                    measurement,
-                ),
+                attestation: attestation.clone(),
                 system_ciphertext,
             },
         )
@@ -412,6 +438,20 @@ mod tests {
         assert_eq!(
             open_enclave_ciphertext_for_tests(&enclave, &response.ciphertext).unwrap(),
             plaintext
+        );
+        assert_eq!(
+            decode_enclave_aad(&response.ciphertext.aad.0).unwrap(),
+            EnclaveAadV1 {
+                version: 1,
+                kind: AadKind::Enclave,
+                chain_id: state.config().chain_id,
+                domain_id: state.config().domain_id,
+                request_id,
+                handle_id,
+                type_tag: "suint256".to_string(),
+                attestation_digest: attestation_digest(&attestation),
+                key_id: state.config().key_id,
+            }
         );
     }
 
