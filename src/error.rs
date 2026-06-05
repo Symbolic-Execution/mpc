@@ -37,22 +37,24 @@ impl MpcError {
             Self::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
         }
     }
+
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::BadRequest(_) => "bad_request",
+            Self::Forbidden(_) => "forbidden",
+            Self::NotFound(_) => "not_found",
+            Self::Conflict(_) => "conflict",
+            Self::Unprocessable(_) => "unprocessable",
+            Self::Unavailable(_) => "unavailable",
+        }
+    }
 }
 
 impl IntoResponse for MpcError {
     fn into_response(self) -> Response {
         let status = self.status_code();
-        let code = match status.as_u16() {
-            400 => "bad_request",
-            403 => "forbidden",
-            404 => "not_found",
-            409 => "conflict",
-            422 => "unprocessable",
-            503 => "unavailable",
-            _ => "error",
-        };
         let body = ErrorResponse {
-            code: code.to_string(),
+            code: self.code().to_string(),
             message: self.to_string(),
         };
         (status, Json(body)).into_response()
@@ -89,6 +91,31 @@ mod tests {
         assert_eq!(
             MpcError::Unavailable("backend".to_string()).status_code(),
             StatusCode::SERVICE_UNAVAILABLE
+        );
+    }
+
+    #[test]
+    fn code_maps_domain_errors() {
+        assert_eq!(
+            MpcError::BadRequest("bad json".to_string()).code(),
+            "bad_request"
+        );
+        assert_eq!(
+            MpcError::Forbidden("reader".to_string()).code(),
+            "forbidden"
+        );
+        assert_eq!(MpcError::NotFound("key".to_string()).code(), "not_found");
+        assert_eq!(
+            MpcError::Conflict("reader exists".to_string()).code(),
+            "conflict"
+        );
+        assert_eq!(
+            MpcError::Unprocessable("binding".to_string()).code(),
+            "unprocessable"
+        );
+        assert_eq!(
+            MpcError::Unavailable("backend".to_string()).code(),
+            "unavailable"
         );
     }
 

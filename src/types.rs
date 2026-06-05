@@ -2,70 +2,38 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use std::fmt;
 
-pub type Address = FixedBytes<20>;
-pub type Bytes32 = FixedBytes<32>;
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct FixedBytes<const N: usize>(pub [u8; N]);
 
-pub type DomainId = Bytes32;
-pub type KeyId = Bytes32;
-pub type RequestId = Bytes32;
-pub type ReaderId = Bytes32;
-pub type HandleId = Bytes32;
-pub type EnclaveMeasurement = Bytes32;
-pub type AttestationDigest = Bytes32;
-pub type X25519PublicKey = FixedBytes<32>;
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Address(pub [u8; 20]);
 
-#[allow(non_snake_case)]
-pub fn Address(bytes: [u8; 20]) -> Address {
-    FixedBytes(bytes)
-}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Bytes32(pub [u8; 32]);
 
-#[allow(non_snake_case)]
-pub fn Bytes32(bytes: [u8; 32]) -> Bytes32 {
-    FixedBytes(bytes)
-}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct DomainId(pub [u8; 32]);
 
-#[allow(non_snake_case)]
-pub fn DomainId(bytes: [u8; 32]) -> DomainId {
-    FixedBytes(bytes)
-}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct KeyId(pub [u8; 32]);
 
-#[allow(non_snake_case)]
-pub fn KeyId(bytes: [u8; 32]) -> KeyId {
-    FixedBytes(bytes)
-}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct RequestId(pub [u8; 32]);
 
-#[allow(non_snake_case)]
-pub fn RequestId(bytes: [u8; 32]) -> RequestId {
-    FixedBytes(bytes)
-}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ReaderId(pub [u8; 32]);
 
-#[allow(non_snake_case)]
-pub fn ReaderId(bytes: [u8; 32]) -> ReaderId {
-    FixedBytes(bytes)
-}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct HandleId(pub [u8; 32]);
 
-#[allow(non_snake_case)]
-pub fn HandleId(bytes: [u8; 32]) -> HandleId {
-    FixedBytes(bytes)
-}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct EnclaveMeasurement(pub [u8; 32]);
 
-#[allow(non_snake_case)]
-pub fn EnclaveMeasurement(bytes: [u8; 32]) -> EnclaveMeasurement {
-    FixedBytes(bytes)
-}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct AttestationDigest(pub [u8; 32]);
 
-#[allow(non_snake_case)]
-pub fn AttestationDigest(bytes: [u8; 32]) -> AttestationDigest {
-    FixedBytes(bytes)
-}
-
-#[allow(non_snake_case)]
-pub fn X25519PublicKey(bytes: [u8; 32]) -> X25519PublicKey {
-    FixedBytes(bytes)
-}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct X25519PublicKey(pub [u8; 32]);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Attestation(pub Vec<u8>);
@@ -73,15 +41,58 @@ pub struct Attestation(pub Vec<u8>);
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PayloadBytes(pub Vec<u8>);
 
+fn serialize_fixed_bytes<const N: usize, S>(
+    bytes: &[u8; N],
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    let mut encoded = String::with_capacity(2 + (N * 2));
+    encoded.push_str("0x");
+    encoded.push_str(&hex::encode(bytes));
+    serializer.serialize_str(&encoded)
+}
+
+fn deserialize_fixed_bytes<'de, const N: usize, D>(deserializer: D) -> Result<[u8; N], D::Error>
+where
+    D: Deserializer<'de>,
+{
+    struct FixedBytesVisitor<const N: usize>;
+
+    impl<const N: usize> de::Visitor<'_> for FixedBytesVisitor<N> {
+        type Value = [u8; N];
+
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(formatter, "a 0x-prefixed hex string with {N} bytes")
+        }
+
+        fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            let hex = value
+                .strip_prefix("0x")
+                .ok_or_else(|| E::custom("missing 0x prefix"))?;
+            if hex.len() != N * 2 {
+                return Err(E::custom(format!("expected {} hex characters", N * 2)));
+            }
+
+            let mut bytes = [0; N];
+            hex::decode_to_slice(hex, &mut bytes).map_err(E::custom)?;
+            Ok(bytes)
+        }
+    }
+
+    deserializer.deserialize_str(FixedBytesVisitor::<N>)
+}
+
 impl<const N: usize> Serialize for FixedBytes<N> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        let mut hex = String::with_capacity(2 + (N * 2));
-        hex.push_str("0x");
-        hex.push_str(&hex::encode(self.0));
-        serializer.serialize_str(&hex)
+        serialize_fixed_bytes(&self.0, serializer)
     }
 }
 
@@ -90,38 +101,42 @@ impl<'de, const N: usize> Deserialize<'de> for FixedBytes<N> {
     where
         D: Deserializer<'de>,
     {
-        struct FixedBytesVisitor<const N: usize>;
+        deserialize_fixed_bytes(deserializer).map(Self)
+    }
+}
 
-        impl<const N: usize> de::Visitor<'_> for FixedBytesVisitor<N> {
-            type Value = FixedBytes<N>;
-
-            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-                write!(formatter, "a 0x-prefixed hex string with {N} bytes")
-            }
-
-            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+macro_rules! fixed_bytes_newtype_serde {
+    ($name:ident, $len:literal) => {
+        impl Serialize for $name {
+            fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
             where
-                E: de::Error,
+                S: Serializer,
             {
-                let hex = value
-                    .strip_prefix("0x")
-                    .ok_or_else(|| E::custom("missing 0x prefix"))?;
-                if hex.len() != N * 2 {
-                    return Err(E::custom(format!("expected {} hex characters", N * 2)));
-                }
-
-                let decoded = hex::decode(hex).map_err(E::custom)?;
-                let bytes: [u8; N] = decoded
-                    .try_into()
-                    .map_err(|_| E::custom(format!("expected {N} bytes")))?;
-
-                Ok(FixedBytes(bytes))
+                serialize_fixed_bytes(&self.0, serializer)
             }
         }
 
-        deserializer.deserialize_str(FixedBytesVisitor::<N>)
-    }
+        impl<'de> Deserialize<'de> for $name {
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+            where
+                D: Deserializer<'de>,
+            {
+                deserialize_fixed_bytes::<$len, D>(deserializer).map(Self)
+            }
+        }
+    };
 }
+
+fixed_bytes_newtype_serde!(Address, 20);
+fixed_bytes_newtype_serde!(Bytes32, 32);
+fixed_bytes_newtype_serde!(DomainId, 32);
+fixed_bytes_newtype_serde!(KeyId, 32);
+fixed_bytes_newtype_serde!(RequestId, 32);
+fixed_bytes_newtype_serde!(ReaderId, 32);
+fixed_bytes_newtype_serde!(HandleId, 32);
+fixed_bytes_newtype_serde!(EnclaveMeasurement, 32);
+fixed_bytes_newtype_serde!(AttestationDigest, 32);
+fixed_bytes_newtype_serde!(X25519PublicKey, 32);
 
 fn serialize_base64url<S>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error>
 where
@@ -285,5 +300,40 @@ mod tests {
         assert_eq!(json, "\"3q2-7w\"");
         let decoded: PayloadBytes = serde_json::from_str(&json).unwrap();
         assert_eq!(decoded, value);
+    }
+
+    #[test]
+    fn fixed_bytes_json_rejects_missing_0x_prefix() {
+        let err = serde_json::from_str::<Bytes32>(
+            "\"abababababababababababababababababababababababababababababababab\"",
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("missing 0x prefix"));
+    }
+
+    #[test]
+    fn fixed_bytes_json_rejects_wrong_length() {
+        let err = serde_json::from_str::<Bytes32>("\"0xabab\"").unwrap_err();
+        assert!(err.to_string().contains("expected 64 hex characters"));
+    }
+
+    #[test]
+    fn fixed_bytes_json_rejects_invalid_hex() {
+        let err = serde_json::from_str::<Bytes32>(
+            "\"0xgggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg\"",
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("Invalid character"));
+    }
+
+    #[test]
+    fn payload_bytes_json_rejects_invalid_base64url() {
+        assert!(serde_json::from_str::<PayloadBytes>("\"****\"").is_err());
+    }
+
+    #[test]
+    fn payload_bytes_json_rejects_padded_base64() {
+        let err = serde_json::from_str::<PayloadBytes>("\"3q2-7w==\"").unwrap_err();
+        assert!(err.to_string().contains("Invalid padding"));
     }
 }

@@ -239,20 +239,29 @@ mod tests {
 Define these public types in `src/types.rs`:
 
 ```rust
-pub type Address = FixedBytes<20>;
-pub type Bytes32 = FixedBytes<32>;
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct FixedBytes<const N: usize>(pub [u8; N]);
 
-pub type DomainId = Bytes32;
-pub type KeyId = Bytes32;
-pub type RequestId = Bytes32;
-pub type ReaderId = Bytes32;
-pub type HandleId = Bytes32;
-pub type EnclaveMeasurement = Bytes32;
-pub type AttestationDigest = Bytes32;
-pub type X25519PublicKey = FixedBytes<32>;
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Address(pub [u8; 20]);
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Bytes32(pub [u8; 32]);
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct DomainId(pub [u8; 32]);
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct KeyId(pub [u8; 32]);
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct RequestId(pub [u8; 32]);
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ReaderId(pub [u8; 32]);
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct HandleId(pub [u8; 32]);
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct EnclaveMeasurement(pub [u8; 32]);
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct AttestationDigest(pub [u8; 32]);
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct X25519PublicKey(pub [u8; 32]);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Attestation(pub Vec<u8>);
@@ -261,9 +270,9 @@ pub struct Attestation(pub Vec<u8>);
 pub struct PayloadBytes(pub Vec<u8>);
 ```
 
-Implement `Serialize` and `Deserialize` for `FixedBytes<N>` as lowercase `0x`
-hex with exact byte length. Implement `Serialize` and `Deserialize` for
-`PayloadBytes` and `Attestation` as base64url without padding.
+Implement `Serialize` and `Deserialize` for all fixed-size byte newtypes as
+lowercase `0x` hex with exact byte length. Implement `Serialize` and
+`Deserialize` for `PayloadBytes` and `Attestation` as base64url without padding.
 
 - [ ] **Step 3: Add API enums, ciphertext envelopes, and DTOs**
 
@@ -1147,7 +1156,7 @@ git commit -m "docs: add MPC local run instructions"
   `cargo run`.
 - Scope check: The plan excludes durable storage, threshold protocols,
   production attestation, TLS, coordinator auth, and key rotation.
-- Type consistency: The plan consistently uses `Bytes32` aliases for fixed
+- Type consistency: The plan consistently uses semantic fixed-byte newtypes for
   identifiers, `PayloadBytes` for JSON base64url binary payload fields,
   `HpkeKeypair` for local recipient keys, and `AppState` for shared service
   state.
