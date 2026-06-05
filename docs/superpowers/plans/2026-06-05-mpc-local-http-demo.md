@@ -125,11 +125,81 @@ git commit -m "chore: add MPC crate skeleton"
 
 ---
 
+### Task 1.5: Compile Scaffold For Declared Modules
+
+**Files:**
+- Create: `src/aad.rs`
+- Create: `src/api.rs`
+- Create: `src/attestation.rs`
+- Create: `src/crypto.rs`
+- Create: `src/error.rs`
+- Create: `src/service.rs`
+- Create: `src/state.rs`
+- Create: `src/types.rs`
+
+This task repairs the execution baseline after Task 1. `src/lib.rs` declares
+all planned modules and `src/main.rs` references `api::router` and
+`state::AppState`, so the crate needs minimal module files before later TDD
+tasks can compile and run targeted tests.
+
+- [ ] **Step 1: Add empty future modules**
+
+Create empty files:
+
+```text
+src/aad.rs
+src/attestation.rs
+src/crypto.rs
+src/error.rs
+src/service.rs
+src/types.rs
+```
+
+- [ ] **Step 2: Add minimal state scaffold**
+
+Create `src/state.rs`:
+
+```rust
+#[derive(Clone, Debug, Default)]
+pub struct AppState;
+
+impl AppState {
+    pub fn local_ephemeral() -> Self {
+        Self
+    }
+}
+```
+
+- [ ] **Step 3: Add minimal API scaffold**
+
+Create `src/api.rs`:
+
+```rust
+pub fn router(_state: crate::state::AppState) -> axum::Router {
+    axum::Router::new()
+}
+```
+
+- [ ] **Step 4: Run compile check**
+
+Run: `cargo check --locked`
+
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add docs/superpowers/plans/2026-06-05-mpc-local-http-demo.md src/aad.rs src/api.rs src/attestation.rs src/crypto.rs src/error.rs src/service.rs src/state.rs src/types.rs
+git commit -m "chore: add compile scaffold for MPC modules"
+```
+
+---
+
 ### Task 2: Fixed Bytes, Serde, DTOs, And Errors
 
 **Files:**
-- Create: `src/types.rs`
-- Create: `src/error.rs`
+- Modify: `src/types.rs`
+- Modify: `src/error.rs`
 - Test: unit tests inside `src/types.rs` and `src/error.rs`
 
 - [ ] **Step 1: Write fixed-byte serde tests**
