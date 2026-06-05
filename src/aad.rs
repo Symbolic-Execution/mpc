@@ -365,6 +365,32 @@ mod tests {
     }
 
     #[test]
+    fn system_input_aad_matches_expected_canonical_bytes() {
+        let aad = SystemInputAadV1 {
+            version: 1,
+            kind: AadKind::SystemInput,
+            chain_id: 24,
+            domain_id: DomainId([0x11; 32]),
+            contract: Address([0x22; 20]),
+            type_tag: "u8".to_string(),
+            key_id: KeyId([0x33; 32]),
+        };
+
+        let expected = [
+            vec![0x87, 0x01, 0x01, 0x18, 0x18, 0x58, 0x20],
+            vec![0x11; 32],
+            vec![0x54],
+            vec![0x22; 20],
+            vec![0x62, b'u', b'8', 0x58, 0x20],
+            vec![0x33; 32],
+        ]
+        .concat();
+
+        let encoded = encode_aad(&Aad::SystemInput(aad)).unwrap();
+        assert_eq!(encoded, expected);
+    }
+
+    #[test]
     fn system_handle_aad_round_trips_as_fixed_array() {
         let aad = SystemHandleAadV1 {
             version: 1,
@@ -426,6 +452,38 @@ mod tests {
         assert_eq!(encoded[0], 0x89);
         let decoded = decode_enclave_aad(&encoded).unwrap();
         assert_eq!(decoded, aad);
+    }
+
+    #[test]
+    fn enclave_aad_matches_expected_canonical_bytes() {
+        let aad = EnclaveAadV1 {
+            version: 1,
+            kind: AadKind::Enclave,
+            chain_id: 256,
+            domain_id: DomainId([0x11; 32]),
+            request_id: RequestId([0x22; 32]),
+            handle_id: HandleId([0x33; 32]),
+            type_tag: "bool".to_string(),
+            attestation_digest: AttestationDigest([0x44; 32]),
+            key_id: KeyId([0x55; 32]),
+        };
+
+        let expected = [
+            vec![0x89, 0x01, 0x03, 0x19, 0x01, 0x00, 0x58, 0x20],
+            vec![0x11; 32],
+            vec![0x58, 0x20],
+            vec![0x22; 32],
+            vec![0x58, 0x20],
+            vec![0x33; 32],
+            vec![0x64, b'b', b'o', b'o', b'l', 0x58, 0x20],
+            vec![0x44; 32],
+            vec![0x58, 0x20],
+            vec![0x55; 32],
+        ]
+        .concat();
+
+        let encoded = encode_aad(&Aad::Enclave(aad)).unwrap();
+        assert_eq!(encoded, expected);
     }
 
     #[test]
@@ -511,6 +569,71 @@ mod tests {
     }
 
     #[test]
+    fn decode_rejects_unsupported_version() {
+        let value = system_handle_value_with(
+            Value::Integer(2.into()),
+            Value::Text("u8".to_string()),
+            vec![0x11; 32],
+        );
+        let encoded = encode_value(&value);
+
+        let err = decode_source_aad(&encoded).unwrap_err();
+        assert!(matches!(err, crate::error::MpcError::BadRequest(_)));
+    }
+
+    #[test]
+    fn decode_rejects_wrong_array_length() {
+        let value = Value::Array(vec![
+            Value::Integer(1.into()),
+            Value::Integer((AadKind::SystemHandle as u8).into()),
+            Value::Integer(24.into()),
+        ]);
+        let encoded = encode_value(&value);
+
+        let err = decode_source_aad(&encoded).unwrap_err();
+        assert!(matches!(err, crate::error::MpcError::BadRequest(_)));
+    }
+
+    #[test]
+    fn decode_rejects_wrong_fixed_byte_width() {
+        let value = system_handle_value_with(
+            Value::Integer(1.into()),
+            Value::Text("u8".to_string()),
+            vec![0x11; 31],
+        );
+        let encoded = encode_value(&value);
+
+        let err = decode_source_aad(&encoded).unwrap_err();
+        assert!(matches!(err, crate::error::MpcError::BadRequest(_)));
+    }
+
+    #[test]
+    fn decode_rejects_non_text_type_tag() {
+        let value = system_handle_value_with(
+            Value::Integer(1.into()),
+            Value::Integer(7.into()),
+            vec![0x11; 32],
+        );
+        let encoded = encode_value(&value);
+
+        let err = decode_source_aad(&encoded).unwrap_err();
+        assert!(matches!(err, crate::error::MpcError::BadRequest(_)));
+    }
+
+    #[test]
+    fn decode_rejects_trailing_data() {
+        let mut encoded = encode_value(&system_handle_value_with(
+            Value::Integer(1.into()),
+            Value::Text("u8".to_string()),
+            vec![0x11; 32],
+        ));
+        encoded.push(0x00);
+
+        let err = decode_source_aad(&encoded).unwrap_err();
+        assert!(matches!(err, crate::error::MpcError::BadRequest(_)));
+    }
+
+    #[test]
     fn encode_rejects_unsupported_version() {
         let aad = SystemInputAadV1 {
             version: 2,
@@ -558,5 +681,23 @@ mod tests {
 
         let err = decode_source_aad(&encoded).unwrap_err();
         assert!(matches!(err, crate::error::MpcError::BadRequest(_)));
+    }
+
+    fn system_handle_value_with(version: Value, type_tag: Value, domain_id: Vec<u8>) -> Value {
+        Value::Array(vec![
+            version,
+            Value::Integer((AadKind::SystemHandle as u8).into()),
+            Value::Integer(24.into()),
+            Value::Bytes(domain_id),
+            Value::Bytes(vec![0x22; 32]),
+            type_tag,
+            Value::Bytes(vec![0x33; 32]),
+        ])
+    }
+
+    fn encode_value(value: &Value) -> Vec<u8> {
+        let mut encoded = Vec::new();
+        ciborium::ser::into_writer(value, &mut encoded).unwrap();
+        encoded
     }
 }
