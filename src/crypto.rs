@@ -22,6 +22,8 @@ type HpkeKem = hpke::kem::X25519HkdfSha256;
 
 const HPKE_INFO: &[u8] = b"mpc-hpke-v1";
 
+// hpke 0.13 exposes rand_core 0.9 traits, while this crate depends on rand 0.8.
+// This adapter lets HPKE use rand 0.8's OS RNG without adding another public dependency.
 struct HpkeOsRng(RandOsRng);
 
 impl HpkeRngCore for HpkeOsRng {
@@ -132,11 +134,8 @@ pub fn seal_system_ciphertext(
     aad: &Aad,
     plaintext: &[u8],
 ) -> Result<SystemCiphertextV1, MpcError> {
-    if !matches!(aad, Aad::SystemInput(_) | Aad::SystemHandle(_)) {
-        return Err(MpcError::BadRequest(
-            "system ciphertext aad must be system input or system handle".to_string(),
-        ));
-    }
+    let aad_key_id = source_aad_key_id_from_aad(aad)?;
+    require_matching_key_id(key_id, aad_key_id)?;
 
     let encoded_aad = encode_aad(aad)?;
     let mut dek = [0u8; 32];
@@ -178,6 +177,7 @@ pub fn open_system_ciphertext(
         &ciphertext.ciphertext.0,
     )?;
     let source_aad = decode_source_aad(&ciphertext.aad.0)?;
+    require_matching_key_id(ciphertext.key_id, source_aad_key_id(&source_aad))?;
 
     Ok(OpenedSystemCiphertext {
         source_aad,
@@ -191,6 +191,7 @@ pub fn seal_reader_ciphertext(
     aad: ReaderAadV1,
     plaintext: &[u8],
 ) -> Result<ReaderCiphertextV1, MpcError> {
+    require_matching_key_id(key_id, aad.key_id)?;
     let encoded_aad = encode_aad(&Aad::Reader(aad))?;
     let (enc, ciphertext) = hpke_seal(reader_pubkey, &encoded_aad, plaintext)?;
 
@@ -208,6 +209,7 @@ pub fn seal_enclave_ciphertext(
     aad: EnclaveAadV1,
     plaintext: &[u8],
 ) -> Result<EnclaveCiphertextV1, MpcError> {
+    require_matching_key_id(key_id, aad.key_id)?;
     let encoded_aad = encode_aad(&Aad::Enclave(aad))?;
     let (enc, ciphertext) = hpke_seal(enclave_pubkey, &encoded_aad, plaintext)?;
 
@@ -294,6 +296,31 @@ fn encode_plaintext_bytes<const N: usize>(bytes: [u8; N]) -> Result<Vec<u8>, Mpc
     ciborium::ser::into_writer(&Value::Bytes(bytes.to_vec()), &mut encoded)
         .map_err(|err| unprocessable(format!("failed to encode plaintext: {err}")))?;
     Ok(encoded)
+}
+
+fn source_aad_key_id_from_aad(aad: &Aad) -> Result<KeyId, MpcError> {
+    match aad {
+        Aad::SystemInput(aad) => Ok(aad.key_id),
+        Aad::SystemHandle(aad) => Ok(aad.key_id),
+        Aad::Enclave(_) | Aad::Reader(_) => Err(MpcError::BadRequest(
+            "system ciphertext aad must be system input or system handle".to_string(),
+        )),
+    }
+}
+
+fn source_aad_key_id(aad: &SourceAad) -> KeyId {
+    match aad {
+        SourceAad::SystemInput(aad) => aad.key_id,
+        SourceAad::SystemHandle(aad) => aad.key_id,
+    }
+}
+
+fn require_matching_key_id(ciphertext_key_id: KeyId, aad_key_id: KeyId) -> Result<(), MpcError> {
+    if ciphertext_key_id != aad_key_id {
+        return Err(unprocessable("ciphertext key_id must match aad key_id"));
+    }
+
+    Ok(())
 }
 
 fn unprocessable(message: impl Into<String>) -> MpcError {
@@ -398,6 +425,73 @@ mod tests {
     }
 
     #[test]
+    fn seal_system_ciphertext_rejects_key_id_mismatch() {
+        let keypair = HpkeKeypair::from_seed_for_tests([7u8; 32]);
+        let aad = Aad::SystemHandle(SystemHandleAadV1 {
+            version: 1,
+            kind: AadKind::SystemHandle,
+            chain_id: 31337,
+            domain_id: DomainId([1; 32]),
+            handle_id: HandleId([2; 32]),
+            type_tag: "suint256".to_string(),
+            key_id: KeyId([3; 32]),
+        });
+        let plaintext = encode_plaintext_suint256([9u8; 32]).unwrap();
+
+        let err = seal_system_ciphertext(&keypair.public_key, KeyId([4; 32]), &aad, &plaintext)
+            .unwrap_err();
+
+        assert!(matches!(err, MpcError::Unprocessable(_)));
+    }
+
+    #[test]
+    fn open_system_ciphertext_rejects_tampered_top_level_key_id() {
+        let keypair = HpkeKeypair::from_seed_for_tests([7u8; 32]);
+        let aad = Aad::SystemHandle(SystemHandleAadV1 {
+            version: 1,
+            kind: AadKind::SystemHandle,
+            chain_id: 31337,
+            domain_id: DomainId([1; 32]),
+            handle_id: HandleId([2; 32]),
+            type_tag: "suint256".to_string(),
+            key_id: KeyId([3; 32]),
+        });
+        let plaintext = encode_plaintext_suint256([9u8; 32]).unwrap();
+        let mut ciphertext =
+            seal_system_ciphertext(&keypair.public_key, KeyId([3; 32]), &aad, &plaintext).unwrap();
+
+        ciphertext.key_id = KeyId([4; 32]);
+
+        assert!(matches!(
+            open_system_ciphertext(&keypair, &ciphertext),
+            Err(MpcError::Unprocessable(_))
+        ));
+    }
+
+    #[test]
+    fn open_system_ciphertext_rejects_wrong_mpc_keypair() {
+        let keypair = HpkeKeypair::from_seed_for_tests([7u8; 32]);
+        let wrong_keypair = HpkeKeypair::from_seed_for_tests([8u8; 32]);
+        let aad = Aad::SystemHandle(SystemHandleAadV1 {
+            version: 1,
+            kind: AadKind::SystemHandle,
+            chain_id: 31337,
+            domain_id: DomainId([1; 32]),
+            handle_id: HandleId([2; 32]),
+            type_tag: "suint256".to_string(),
+            key_id: KeyId([3; 32]),
+        });
+        let plaintext = encode_plaintext_suint256([9u8; 32]).unwrap();
+        let ciphertext =
+            seal_system_ciphertext(&keypair.public_key, KeyId([3; 32]), &aad, &plaintext).unwrap();
+
+        assert!(matches!(
+            open_system_ciphertext(&wrong_keypair, &ciphertext),
+            Err(MpcError::Unprocessable(_))
+        ));
+    }
+
+    #[test]
     fn reader_ciphertext_opens_with_matching_key_and_rejects_wrong_key() {
         let reader_keypair = HpkeKeypair::from_seed_for_tests([8u8; 32]);
         let wrong_keypair = HpkeKeypair::from_seed_for_tests([9u8; 32]);
@@ -426,6 +520,29 @@ mod tests {
     }
 
     #[test]
+    fn seal_reader_ciphertext_rejects_key_id_mismatch() {
+        let reader_keypair = HpkeKeypair::from_seed_for_tests([8u8; 32]);
+        let aad = ReaderAadV1 {
+            version: 1,
+            kind: AadKind::Reader,
+            chain_id: 31337,
+            domain_id: DomainId([1; 32]),
+            request_id: RequestId([2; 32]),
+            handle_id: HandleId([3; 32]),
+            reader_id: reader_id(reader_keypair.public_key),
+            type_tag: "sbool".to_string(),
+            key_id: KeyId([4; 32]),
+        };
+        let plaintext = encode_plaintext_sbool(true).unwrap();
+
+        let err =
+            seal_reader_ciphertext(reader_keypair.public_key, KeyId([5; 32]), aad, &plaintext)
+                .unwrap_err();
+
+        assert!(matches!(err, MpcError::Unprocessable(_)));
+    }
+
+    #[test]
     fn enclave_ciphertext_opens_with_matching_key_and_rejects_wrong_key() {
         let enclave_keypair = HpkeKeypair::from_seed_for_tests([10u8; 32]);
         let wrong_keypair = HpkeKeypair::from_seed_for_tests([11u8; 32]);
@@ -451,6 +568,29 @@ mod tests {
             plaintext
         );
         assert!(open_enclave_ciphertext_for_tests(&wrong_keypair, &ciphertext).is_err());
+    }
+
+    #[test]
+    fn seal_enclave_ciphertext_rejects_key_id_mismatch() {
+        let enclave_keypair = HpkeKeypair::from_seed_for_tests([10u8; 32]);
+        let aad = EnclaveAadV1 {
+            version: 1,
+            kind: AadKind::Enclave,
+            chain_id: 31337,
+            domain_id: DomainId([1; 32]),
+            request_id: RequestId([2; 32]),
+            handle_id: HandleId([3; 32]),
+            type_tag: "suint256".to_string(),
+            attestation_digest: AttestationDigest([4; 32]),
+            key_id: KeyId([5; 32]),
+        };
+        let plaintext = encode_plaintext_suint256([6u8; 32]).unwrap();
+
+        let err =
+            seal_enclave_ciphertext(enclave_keypair.public_key, KeyId([6; 32]), aad, &plaintext)
+                .unwrap_err();
+
+        assert!(matches!(err, MpcError::Unprocessable(_)));
     }
 
     #[test]
