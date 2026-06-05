@@ -1,5 +1,5 @@
-use crypto::keccak256;
 use crate::error::MpcError;
+use crypto::keccak256;
 use types::{Attestation, EnclaveMeasurement, X25519PublicKey};
 
 const LOCAL_ATTESTATION_DOMAIN: &[u8] = b"mpc-local-attestation-v1";

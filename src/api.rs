@@ -70,10 +70,10 @@ fn parse_reader_id(value: &str) -> Result<ReaderId, MpcError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crypto::reader_id;
     use crate::state::AppState;
     use axum::body::{self, Body};
     use axum::http::{Request, StatusCode};
+    use crypto::reader_id;
     use tower::ServiceExt;
     use types::X25519PublicKey;
 

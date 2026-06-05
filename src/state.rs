@@ -1,6 +1,6 @@
 use crate::attestation::{AttestationVerifier, LocalAttestationVerifier};
-use crypto::HpkeKeypair;
 use crate::error::MpcError;
+use crypto::HpkeKeypair;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use types::{
