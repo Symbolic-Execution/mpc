@@ -163,6 +163,9 @@ pub fn open_system_ciphertext(
     keypair: &HpkeKeypair,
     ciphertext: &SystemCiphertextV1,
 ) -> Result<OpenedSystemCiphertext, MpcError> {
+    let source_aad = decode_source_aad(&ciphertext.aad.0)?;
+    require_matching_key_id(ciphertext.key_id, source_aad_key_id(&source_aad))?;
+
     let dek = hpke_open(
         keypair,
         &ciphertext.enc.0,
@@ -179,8 +182,6 @@ pub fn open_system_ciphertext(
         &ciphertext.aad.0,
         &ciphertext.ciphertext.0,
     )?;
-    let source_aad = decode_source_aad(&ciphertext.aad.0)?;
-    require_matching_key_id(ciphertext.key_id, source_aad_key_id(&source_aad))?;
 
     Ok(OpenedSystemCiphertext {
         source_aad,
@@ -499,6 +500,29 @@ mod tests {
         assert!(matches!(
             open_system_ciphertext(&wrong_keypair, &ciphertext),
             Err(MpcError::Unprocessable(_))
+        ));
+    }
+
+    #[test]
+    fn open_system_ciphertext_rejects_malformed_aad_as_bad_request() {
+        let keypair = HpkeKeypair::from_seed_for_tests([7u8; 32]);
+        let aad = Aad::SystemHandle(SystemHandleAadV1 {
+            version: 1,
+            kind: AadKind::SystemHandle,
+            chain_id: 31337,
+            domain_id: DomainId([1; 32]),
+            handle_id: HandleId([2; 32]),
+            type_tag: "suint256".to_string(),
+            key_id: KeyId([3; 32]),
+        });
+        let plaintext = encode_plaintext_suint256([9u8; 32]).unwrap();
+        let mut ciphertext =
+            seal_system_ciphertext(&keypair.public_key, KeyId([3; 32]), &aad, &plaintext).unwrap();
+        ciphertext.aad = PayloadBytes(vec![0xff]);
+
+        assert!(matches!(
+            open_system_ciphertext(&keypair, &ciphertext),
+            Err(MpcError::BadRequest(_))
         ));
     }
 

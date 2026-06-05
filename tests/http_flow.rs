@@ -302,6 +302,35 @@ async fn wrong_handle_id_on_to_reader_returns_unprocessable() {
 }
 
 #[tokio::test]
+async fn malformed_system_aad_on_to_reader_returns_bad_request() {
+    let state = AppState::local_deterministic_for_tests();
+    let app = router(state.clone());
+    let reader = HpkeKeypair::from_seed_for_tests([10; 32]);
+    let reader_id = register_reader(&app, &reader).await;
+    let handle_id = HandleId([0x44; 32]);
+    let (mut system_ciphertext, _) = system_handle_ciphertext(&state, handle_id, [0x99; 32]);
+    system_ciphertext.aad = PayloadBytes(vec![0xff]);
+
+    let response = send(
+        &app,
+        json_request(
+            Method::POST,
+            "/v1/operations/to-reader",
+            &ToReaderRequest {
+                request_id: RequestId([0x66; 32]),
+                chain_id: state.config().chain_id,
+                handle_id,
+                reader_id,
+                system_ciphertext,
+            },
+        ),
+    )
+    .await;
+
+    assert_error(response, StatusCode::BAD_REQUEST, "bad_request").await;
+}
+
+#[tokio::test]
 async fn wrong_enclave_measurement_on_to_enclave_returns_forbidden() {
     let state = AppState::local_deterministic_for_tests();
     let app = router(state.clone());
