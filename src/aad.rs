@@ -16,6 +16,7 @@ pub enum AadKind {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SystemInputAadV1 {
     pub version: u8,
+    pub kind: AadKind,
     pub chain_id: u64,
     pub domain_id: DomainId,
     pub contract: Address,
@@ -26,6 +27,7 @@ pub struct SystemInputAadV1 {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SystemHandleAadV1 {
     pub version: u8,
+    pub kind: AadKind,
     pub chain_id: u64,
     pub domain_id: DomainId,
     pub handle_id: HandleId,
@@ -36,6 +38,7 @@ pub struct SystemHandleAadV1 {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EnclaveAadV1 {
     pub version: u8,
+    pub kind: AadKind,
     pub chain_id: u64,
     pub domain_id: DomainId,
     pub request_id: RequestId,
@@ -48,6 +51,7 @@ pub struct EnclaveAadV1 {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReaderAadV1 {
     pub version: u8,
+    pub kind: AadKind,
     pub chain_id: u64,
     pub domain_id: DomainId,
     pub request_id: RequestId,
@@ -72,20 +76,23 @@ pub enum SourceAad {
 }
 
 pub fn encode_aad(aad: &Aad) -> Result<Vec<u8>, MpcError> {
-    let version = match aad {
-        Aad::SystemInput(aad) => aad.version,
-        Aad::SystemHandle(aad) => aad.version,
-        Aad::Enclave(aad) => aad.version,
-        Aad::Reader(aad) => aad.version,
+    let (version, kind, expected_kind) = match aad {
+        Aad::SystemInput(aad) => (aad.version, aad.kind, AadKind::SystemInput),
+        Aad::SystemHandle(aad) => (aad.version, aad.kind, AadKind::SystemHandle),
+        Aad::Enclave(aad) => (aad.version, aad.kind, AadKind::Enclave),
+        Aad::Reader(aad) => (aad.version, aad.kind, AadKind::Reader),
     };
     if version != AAD_VERSION_V1 {
         return Err(bad_request(format!("unsupported aad version: {version}")));
+    }
+    if kind != expected_kind {
+        return Err(bad_request("aad wrapper kind mismatch"));
     }
 
     let value = match aad {
         Aad::SystemInput(aad) => Value::Array(vec![
             integer(aad.version),
-            integer(AadKind::SystemInput as u8),
+            integer(aad.kind as u8),
             integer(aad.chain_id),
             bytes(&aad.domain_id.0),
             bytes(&aad.contract.0),
@@ -94,7 +101,7 @@ pub fn encode_aad(aad: &Aad) -> Result<Vec<u8>, MpcError> {
         ]),
         Aad::SystemHandle(aad) => Value::Array(vec![
             integer(aad.version),
-            integer(AadKind::SystemHandle as u8),
+            integer(aad.kind as u8),
             integer(aad.chain_id),
             bytes(&aad.domain_id.0),
             bytes(&aad.handle_id.0),
@@ -103,7 +110,7 @@ pub fn encode_aad(aad: &Aad) -> Result<Vec<u8>, MpcError> {
         ]),
         Aad::Enclave(aad) => Value::Array(vec![
             integer(aad.version),
-            integer(AadKind::Enclave as u8),
+            integer(aad.kind as u8),
             integer(aad.chain_id),
             bytes(&aad.domain_id.0),
             bytes(&aad.request_id.0),
@@ -114,7 +121,7 @@ pub fn encode_aad(aad: &Aad) -> Result<Vec<u8>, MpcError> {
         ]),
         Aad::Reader(aad) => Value::Array(vec![
             integer(aad.version),
-            integer(AadKind::Reader as u8),
+            integer(aad.kind as u8),
             integer(aad.chain_id),
             bytes(&aad.domain_id.0),
             bytes(&aad.request_id.0),
@@ -160,6 +167,7 @@ fn decode_system_input(values: Vec<Value>) -> Result<SystemInputAadV1, MpcError>
     let values = fixed_len::<7>(values)?;
     Ok(SystemInputAadV1 {
         version: read_u8(&values[0], "version")?,
+        kind: read_kind(&values[1])?,
         chain_id: read_u64(&values[2], "chain_id")?,
         domain_id: DomainId(read_bytes(&values[3], "domain_id")?),
         contract: Address(read_bytes(&values[4], "contract")?),
@@ -172,6 +180,7 @@ fn decode_system_handle(values: Vec<Value>) -> Result<SystemHandleAadV1, MpcErro
     let values = fixed_len::<7>(values)?;
     Ok(SystemHandleAadV1 {
         version: read_u8(&values[0], "version")?,
+        kind: read_kind(&values[1])?,
         chain_id: read_u64(&values[2], "chain_id")?,
         domain_id: DomainId(read_bytes(&values[3], "domain_id")?),
         handle_id: HandleId(read_bytes(&values[4], "handle_id")?),
@@ -184,6 +193,7 @@ fn decode_enclave(values: Vec<Value>) -> Result<EnclaveAadV1, MpcError> {
     let values = fixed_len::<9>(values)?;
     Ok(EnclaveAadV1 {
         version: read_u8(&values[0], "version")?,
+        kind: read_kind(&values[1])?,
         chain_id: read_u64(&values[2], "chain_id")?,
         domain_id: DomainId(read_bytes(&values[3], "domain_id")?),
         request_id: RequestId(read_bytes(&values[4], "request_id")?),
@@ -198,6 +208,7 @@ fn decode_reader(values: Vec<Value>) -> Result<ReaderAadV1, MpcError> {
     let values = fixed_len::<9>(values)?;
     Ok(ReaderAadV1 {
         version: read_u8(&values[0], "version")?,
+        kind: read_kind(&values[1])?,
         chain_id: read_u64(&values[2], "chain_id")?,
         domain_id: DomainId(read_bytes(&values[3], "domain_id")?),
         request_id: RequestId(read_bytes(&values[4], "request_id")?),
@@ -250,10 +261,14 @@ fn require_kind(values: &[Value], expected: AadKind) -> Result<(), MpcError> {
 }
 
 fn aad_kind(values: &[Value]) -> Result<AadKind, MpcError> {
-    let kind = values
+    values
         .get(1)
         .ok_or_else(|| bad_request("aad array is missing kind"))
-        .and_then(|value| read_u8(value, "kind"))?;
+        .and_then(read_kind)
+}
+
+fn read_kind(value: &Value) -> Result<AadKind, MpcError> {
+    let kind = read_u8(value, "kind")?;
 
     match kind {
         1 => Ok(AadKind::SystemInput),
@@ -335,6 +350,7 @@ mod tests {
     fn system_input_aad_round_trips_as_fixed_array() {
         let aad = SystemInputAadV1 {
             version: 1,
+            kind: AadKind::SystemInput,
             chain_id: 31337,
             domain_id: DomainId([0x11; 32]),
             contract: Address([0x22; 20]),
@@ -352,6 +368,7 @@ mod tests {
     fn system_handle_aad_round_trips_as_fixed_array() {
         let aad = SystemHandleAadV1 {
             version: 1,
+            kind: AadKind::SystemHandle,
             chain_id: 31337,
             domain_id: DomainId([0x11; 32]),
             handle_id: HandleId([0x22; 32]),
@@ -369,6 +386,7 @@ mod tests {
     fn system_handle_aad_matches_expected_canonical_bytes() {
         let aad = SystemHandleAadV1 {
             version: 1,
+            kind: AadKind::SystemHandle,
             chain_id: 24,
             domain_id: DomainId([0x11; 32]),
             handle_id: HandleId([0x22; 32]),
@@ -394,6 +412,7 @@ mod tests {
     fn enclave_aad_round_trips_as_fixed_array() {
         let aad = EnclaveAadV1 {
             version: 1,
+            kind: AadKind::Enclave,
             chain_id: 31337,
             domain_id: DomainId([0x11; 32]),
             request_id: RequestId([0x22; 32]),
@@ -413,6 +432,7 @@ mod tests {
     fn reader_aad_round_trips_as_fixed_array() {
         let aad = ReaderAadV1 {
             version: 1,
+            kind: AadKind::Reader,
             chain_id: 31337,
             domain_id: DomainId([0x11; 32]),
             request_id: RequestId([0x22; 32]),
@@ -432,6 +452,7 @@ mod tests {
     fn reader_aad_matches_expected_canonical_bytes() {
         let aad = ReaderAadV1 {
             version: 1,
+            kind: AadKind::Reader,
             chain_id: 256,
             domain_id: DomainId([0x11; 32]),
             request_id: RequestId([0x22; 32]),
@@ -493,6 +514,7 @@ mod tests {
     fn encode_rejects_unsupported_version() {
         let aad = SystemInputAadV1 {
             version: 2,
+            kind: AadKind::SystemInput,
             chain_id: 31337,
             domain_id: DomainId([0x11; 32]),
             contract: Address([0x22; 20]),
@@ -501,6 +523,22 @@ mod tests {
         };
 
         let err = encode_aad(&Aad::SystemInput(aad)).unwrap_err();
+        assert!(matches!(err, crate::error::MpcError::BadRequest(_)));
+    }
+
+    #[test]
+    fn encode_rejects_wrapper_struct_kind_mismatch() {
+        let aad = SystemHandleAadV1 {
+            version: 1,
+            kind: AadKind::SystemInput,
+            chain_id: 31337,
+            domain_id: DomainId([0x11; 32]),
+            handle_id: HandleId([0x22; 32]),
+            type_tag: "suint256".to_string(),
+            key_id: KeyId([0x33; 32]),
+        };
+
+        let err = encode_aad(&Aad::SystemHandle(aad)).unwrap_err();
         assert!(matches!(err, crate::error::MpcError::BadRequest(_)));
     }
 

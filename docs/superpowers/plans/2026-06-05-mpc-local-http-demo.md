@@ -411,11 +411,12 @@ Add tests for each AAD variant:
 fn system_handle_aad_round_trips_as_fixed_array() {
     let aad = SystemHandleAadV1 {
         version: 1,
+        kind: AadKind::SystemHandle,
         chain_id: 31337,
-        domain_id: Bytes32([0x11; 32]),
-        handle_id: Bytes32([0x22; 32]),
+        domain_id: DomainId([0x11; 32]),
+        handle_id: HandleId([0x22; 32]),
         type_tag: "suint256".to_string(),
-        key_id: Bytes32([0x33; 32]),
+        key_id: KeyId([0x33; 32]),
     };
 
     let encoded = encode_aad(&Aad::SystemHandle(aad.clone())).unwrap();
@@ -447,6 +448,7 @@ pub enum AadKind {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SystemInputAadV1 {
     pub version: u8,
+    pub kind: AadKind,
     pub chain_id: u64,
     pub domain_id: DomainId,
     pub contract: Address,
@@ -457,6 +459,7 @@ pub struct SystemInputAadV1 {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SystemHandleAadV1 {
     pub version: u8,
+    pub kind: AadKind,
     pub chain_id: u64,
     pub domain_id: DomainId,
     pub handle_id: HandleId,
@@ -467,6 +470,7 @@ pub struct SystemHandleAadV1 {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EnclaveAadV1 {
     pub version: u8,
+    pub kind: AadKind,
     pub chain_id: u64,
     pub domain_id: DomainId,
     pub request_id: RequestId,
@@ -479,6 +483,7 @@ pub struct EnclaveAadV1 {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReaderAadV1 {
     pub version: u8,
+    pub kind: AadKind,
     pub chain_id: u64,
     pub domain_id: DomainId,
     pub request_id: RequestId,
@@ -565,11 +570,12 @@ fn system_ciphertext_opens_with_mpc_key() {
     let keypair = HpkeKeypair::from_seed_for_tests([7u8; 32]);
     let aad = Aad::SystemHandle(SystemHandleAadV1 {
         version: 1,
+        kind: AadKind::SystemHandle,
         chain_id: 31337,
-        domain_id: Bytes32([1; 32]),
-        handle_id: Bytes32([2; 32]),
+        domain_id: DomainId([1; 32]),
+        handle_id: HandleId([2; 32]),
         type_tag: "suint256".to_string(),
-        key_id: Bytes32([3; 32]),
+        key_id: KeyId([3; 32]),
     });
     let plaintext = encode_plaintext_suint256([9u8; 32]).unwrap();
     let ciphertext = seal_system_ciphertext(&keypair.public_key, Bytes32([3; 32]), &aad, &plaintext).unwrap();
@@ -839,9 +845,10 @@ fn to_reader_reencrypts_handle_bound_system_ciphertext() {
 
     let aad = Aad::SystemHandle(SystemHandleAadV1 {
         version: 1,
+        kind: AadKind::SystemHandle,
         chain_id: state.config().chain_id,
         domain_id: state.config().domain_id,
-        handle_id: Bytes32([0x44; 32]),
+        handle_id: HandleId([0x44; 32]),
         type_tag: "suint256".to_string(),
         key_id: state.config().key_id,
     });
