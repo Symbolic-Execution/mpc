@@ -216,6 +216,13 @@ fn decode_array(bytes: &[u8]) -> Result<Vec<Value>, MpcError> {
         return Err(bad_request("aad has trailing data"));
     }
 
+    let mut canonical = Vec::new();
+    ciborium::ser::into_writer(&value, &mut canonical)
+        .map_err(|err| bad_request(format!("failed to encode canonical aad: {err}")))?;
+    if canonical != bytes {
+        return Err(bad_request("aad must be canonical cbor"));
+    }
+
     match value {
         Value::Array(values) => Ok(values),
         Value::Map(_) => Err(bad_request("aad must be an array, not a map")),
@@ -359,6 +366,31 @@ mod tests {
     }
 
     #[test]
+    fn system_handle_aad_matches_expected_canonical_bytes() {
+        let aad = SystemHandleAadV1 {
+            version: 1,
+            chain_id: 24,
+            domain_id: DomainId([0x11; 32]),
+            handle_id: HandleId([0x22; 32]),
+            type_tag: "u8".to_string(),
+            key_id: KeyId([0x33; 32]),
+        };
+
+        let expected = [
+            vec![0x87, 0x01, 0x02, 0x18, 0x18, 0x58, 0x20],
+            vec![0x11; 32],
+            vec![0x58, 0x20],
+            vec![0x22; 32],
+            vec![0x62, b'u', b'8', 0x58, 0x20],
+            vec![0x33; 32],
+        ]
+        .concat();
+
+        let encoded = encode_aad(&Aad::SystemHandle(aad)).unwrap();
+        assert_eq!(encoded, expected);
+    }
+
+    #[test]
     fn enclave_aad_round_trips_as_fixed_array() {
         let aad = EnclaveAadV1 {
             version: 1,
@@ -397,6 +429,37 @@ mod tests {
     }
 
     #[test]
+    fn reader_aad_matches_expected_canonical_bytes() {
+        let aad = ReaderAadV1 {
+            version: 1,
+            chain_id: 256,
+            domain_id: DomainId([0x11; 32]),
+            request_id: RequestId([0x22; 32]),
+            handle_id: HandleId([0x33; 32]),
+            reader_id: ReaderId([0x44; 32]),
+            type_tag: "bool".to_string(),
+            key_id: KeyId([0x55; 32]),
+        };
+
+        let expected = [
+            vec![0x89, 0x01, 0x04, 0x19, 0x01, 0x00, 0x58, 0x20],
+            vec![0x11; 32],
+            vec![0x58, 0x20],
+            vec![0x22; 32],
+            vec![0x58, 0x20],
+            vec![0x33; 32],
+            vec![0x58, 0x20],
+            vec![0x44; 32],
+            vec![0x64, b'b', b'o', b'o', b'l', 0x58, 0x20],
+            vec![0x55; 32],
+        ]
+        .concat();
+
+        let encoded = encode_aad(&Aad::Reader(aad)).unwrap();
+        assert_eq!(encoded, expected);
+    }
+
+    #[test]
     fn decode_rejects_map_encoded_aad() {
         let value = Value::Map(vec![
             (Value::Text("version".to_string()), Value::Integer(1.into())),
@@ -406,6 +469,23 @@ mod tests {
         ciborium::ser::into_writer(&value, &mut encoded).unwrap();
 
         let err = decode_source_aad(&encoded).unwrap_err();
+        assert!(matches!(err, crate::error::MpcError::BadRequest(_)));
+    }
+
+    #[test]
+    fn decode_rejects_non_canonical_indefinite_array_aad() {
+        let non_canonical = [
+            vec![0x9f, 0x01, 0x02, 0x18, 0x18, 0x58, 0x20],
+            vec![0x11; 32],
+            vec![0x58, 0x20],
+            vec![0x22; 32],
+            vec![0x62, b'u', b'8', 0x58, 0x20],
+            vec![0x33; 32],
+            vec![0xff],
+        ]
+        .concat();
+
+        let err = decode_source_aad(&non_canonical).unwrap_err();
         assert!(matches!(err, crate::error::MpcError::BadRequest(_)));
     }
 
