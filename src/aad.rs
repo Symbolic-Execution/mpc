@@ -1,5 +1,5 @@
 use crate::error::MpcError;
-use crate::types::{Address, AttestationDigest, DomainId, HandleId, KeyId, ReaderId, RequestId};
+use types::{Address, AttestationDigest, DomainId, HandleId, KeyId, ReaderId, RequestId};
 use ciborium::value::Value;
 use std::io::Cursor;
 
@@ -341,7 +341,7 @@ fn bad_request(message: impl Into<String>) -> MpcError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{
+    use types::{
         Address, AttestationDigest, DomainId, HandleId, KeyId, ReaderId, RequestId,
     };
     use ciborium::value::Value;

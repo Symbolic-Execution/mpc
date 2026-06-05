@@ -4,7 +4,7 @@ use crate::crypto::{
 };
 use crate::error::MpcError;
 use crate::state::AppState;
-use crate::types::{
+use types::{
     DomainId, HandleId, KeyId, MpcConfigResponse, PutReaderRequest, PutReaderResponse, ReaderId,
     ToEnclaveRequest, ToEnclaveResponse, ToReaderRequest, ToReaderResponse,
 };
@@ -170,7 +170,7 @@ mod tests {
     };
     use crate::error::MpcError;
     use crate::state::AppState;
-    use crate::types::{
+    use types::{
         Address, Attestation, EnclaveMeasurement, HandleId, KeyId, PutReaderRequest, ReaderId,
         RequestId, ToEnclaveRequest, ToReaderRequest,
     };
@@ -204,7 +204,7 @@ mod tests {
     fn system_handle_ciphertext(
         state: &AppState,
         handle_id: HandleId,
-    ) -> (crate::types::SystemCiphertextV1, Vec<u8>) {
+    ) -> (types::SystemCiphertextV1, Vec<u8>) {
         let plaintext = encode_plaintext_suint256([0x99; 32]).unwrap();
         let aad = Aad::SystemHandle(SystemHandleAadV1 {
             version: 1,
@@ -226,7 +226,7 @@ mod tests {
         (ciphertext, plaintext)
     }
 
-    fn system_input_ciphertext(state: &AppState) -> (crate::types::SystemCiphertextV1, Vec<u8>) {
+    fn system_input_ciphertext(state: &AppState) -> (types::SystemCiphertextV1, Vec<u8>) {
         let plaintext = encode_plaintext_suint256([0xaa; 32]).unwrap();
         let aad = Aad::SystemInput(SystemInputAadV1 {
             version: 1,

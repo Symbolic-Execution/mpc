@@ -3,7 +3,7 @@ use crate::aad::{
     decode_source_aad, encode_aad,
 };
 use crate::error::MpcError;
-use crate::types::{
+use types::{
     Attestation, AttestationDigest, EnclaveCiphertextV1, FixedBytes, KeyId, PayloadBytes,
     ReaderCiphertextV1, ReaderId, SystemCiphertextV1, X25519PublicKey,
 };
@@ -343,7 +343,7 @@ fn unprocessable(message: impl Into<String>) -> MpcError {
 mod tests {
     use super::*;
     use crate::aad::{Aad, AadKind, EnclaveAadV1, ReaderAadV1, SystemHandleAadV1, encode_aad};
-    use crate::types::{
+    use types::{
         Attestation, AttestationDigest, DomainId, HandleId, KeyId, ReaderId, RequestId,
         X25519PublicKey,
     };

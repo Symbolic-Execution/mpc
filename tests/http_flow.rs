@@ -9,9 +9,9 @@ use mpc::crypto::{
     open_reader_ciphertext_for_tests, reader_id, seal_system_ciphertext,
 };
 use mpc::state::AppState;
-use mpc::types::*;
 use serde::de::DeserializeOwned;
 use tower::ServiceExt;
+use types::*;
 
 fn json_request<T: serde::Serialize>(
     method: Method,

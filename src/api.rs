@@ -1,6 +1,6 @@
 use crate::error::MpcError;
 use crate::state::AppState;
-use crate::types::{
+use types::{
     PutReaderRequest, PutReaderResponse, ReaderId, ToEnclaveRequest, ToEnclaveResponse,
     ToReaderRequest, ToReaderResponse,
 };
@@ -20,7 +20,7 @@ pub fn router(state: AppState) -> Router {
 
 async fn get_config_handler(
     State(state): State<AppState>,
-) -> Json<crate::types::MpcConfigResponse> {
+) -> Json<types::MpcConfigResponse> {
     Json(crate::service::get_config(&state))
 }
 
@@ -74,7 +74,7 @@ mod tests {
     use super::*;
     use crate::crypto::reader_id;
     use crate::state::AppState;
-    use crate::types::X25519PublicKey;
+    use types::X25519PublicKey;
     use axum::body::{self, Body};
     use axum::http::{Request, StatusCode};
     use tower::ServiceExt;
