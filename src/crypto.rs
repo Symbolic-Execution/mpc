@@ -132,6 +132,12 @@ pub fn seal_system_ciphertext(
     aad: &Aad,
     plaintext: &[u8],
 ) -> Result<SystemCiphertextV1, MpcError> {
+    if !matches!(aad, Aad::SystemInput(_) | Aad::SystemHandle(_)) {
+        return Err(MpcError::BadRequest(
+            "system ciphertext aad must be system input or system handle".to_string(),
+        ));
+    }
+
     let encoded_aad = encode_aad(aad)?;
     let mut dek = [0u8; 32];
     let mut nonce = [0u8; 12];
@@ -307,9 +313,14 @@ mod tests {
     #[test]
     fn reader_id_is_keccak256_of_public_key() {
         let public_key = X25519PublicKey([0x42; 32]);
+        let mut hasher = Keccak256::new();
+        hasher.update(public_key.0);
+        let expected: [u8; 32] = hasher.finalize().into();
+
         let id = reader_id(public_key);
         assert_eq!(id.0.len(), 32);
         assert_ne!(id, ReaderId([0x42; 32]));
+        assert_eq!(id, ReaderId(expected));
     }
 
     #[test]
@@ -342,6 +353,48 @@ mod tests {
             seal_system_ciphertext(&keypair.public_key, KeyId([3; 32]), &aad, &plaintext).unwrap();
         let opened = open_system_ciphertext(&keypair, &ciphertext).unwrap();
         assert_eq!(opened.plaintext, plaintext);
+    }
+
+    #[test]
+    fn system_ciphertext_rejects_recipient_aad() {
+        let keypair = HpkeKeypair::from_seed_for_tests([7u8; 32]);
+        let reader_aad = Aad::Reader(ReaderAadV1 {
+            version: 1,
+            kind: AadKind::Reader,
+            chain_id: 31337,
+            domain_id: DomainId([1; 32]),
+            request_id: RequestId([2; 32]),
+            handle_id: HandleId([3; 32]),
+            reader_id: reader_id(keypair.public_key),
+            type_tag: "sbool".to_string(),
+            key_id: KeyId([4; 32]),
+        });
+        let enclave_aad = Aad::Enclave(EnclaveAadV1 {
+            version: 1,
+            kind: AadKind::Enclave,
+            chain_id: 31337,
+            domain_id: DomainId([1; 32]),
+            request_id: RequestId([2; 32]),
+            handle_id: HandleId([3; 32]),
+            type_tag: "suint256".to_string(),
+            attestation_digest: AttestationDigest([4; 32]),
+            key_id: KeyId([5; 32]),
+        });
+        let plaintext = encode_plaintext_sbool(true).unwrap();
+
+        assert!(
+            seal_system_ciphertext(&keypair.public_key, KeyId([4; 32]), &reader_aad, &plaintext)
+                .is_err()
+        );
+        assert!(
+            seal_system_ciphertext(
+                &keypair.public_key,
+                KeyId([5; 32]),
+                &enclave_aad,
+                &plaintext
+            )
+            .is_err()
+        );
     }
 
     #[test]
