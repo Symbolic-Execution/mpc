@@ -67,6 +67,45 @@ pub struct OpenedSystemCiphertext {
     pub plaintext: Vec<u8>,
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+pub struct CipherSuite;
+
+impl CipherSuite {
+    pub fn seal_system_ciphertext(
+        mpc_public_key: &X25519PublicKey,
+        key_id: KeyId,
+        aad: &Aad,
+        plaintext: &[u8],
+    ) -> Result<SystemCiphertextV1, CryptoError> {
+        seal_system_ciphertext(mpc_public_key, key_id, aad, plaintext)
+    }
+
+    pub fn open_system_ciphertext(
+        keypair: &HpkeKeypair,
+        ciphertext: &SystemCiphertextV1,
+    ) -> Result<OpenedSystemCiphertext, CryptoError> {
+        open_system_ciphertext(keypair, ciphertext)
+    }
+
+    pub fn seal_reader_ciphertext(
+        reader_pubkey: X25519PublicKey,
+        key_id: KeyId,
+        aad: ReaderAadV1,
+        plaintext: &[u8],
+    ) -> Result<ReaderCiphertextV1, CryptoError> {
+        seal_reader_ciphertext(reader_pubkey, key_id, aad, plaintext)
+    }
+
+    pub fn seal_enclave_ciphertext(
+        enclave_pubkey: X25519PublicKey,
+        key_id: KeyId,
+        aad: EnclaveAadV1,
+        plaintext: &[u8],
+    ) -> Result<EnclaveCiphertextV1, CryptoError> {
+        seal_enclave_ciphertext(enclave_pubkey, key_id, aad, plaintext)
+    }
+}
+
 impl HpkeKeypair {
     pub fn generate() -> Self {
         let mut rng = HpkeOsRng(RandOsRng);

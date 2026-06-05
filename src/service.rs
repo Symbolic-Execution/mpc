@@ -1,9 +1,7 @@
-use crypto::{
-    attestation_digest, open_system_ciphertext, seal_enclave_ciphertext, seal_reader_ciphertext,
-};
 use crate::error::MpcError;
 use crate::state::AppState;
 use codec::{AadKind, EnclaveAadV1, ReaderAadV1, SourceAad};
+use crypto::{CipherSuite, attestation_digest};
 use types::{
     DomainId, HandleId, KeyId, MpcConfigResponse, PutReaderRequest, PutReaderResponse, ReaderId,
     ToEnclaveRequest, ToEnclaveResponse, ToReaderRequest, ToReaderResponse,
@@ -27,7 +25,7 @@ pub fn to_reader(state: &AppState, request: ToReaderRequest) -> Result<ToReaderR
     let reader_pubkey = state.reader_pubkey(request.reader_id)?;
     require_active_system_key(state, request.system_ciphertext.key_id)?;
 
-    let opened = open_system_ciphertext(state.keypair(), &request.system_ciphertext)?;
+    let opened = CipherSuite::open_system_ciphertext(state.keypair(), &request.system_ciphertext)?;
     let source = source_context(&opened.source_aad);
     let Some(source_handle_id) = source.handle_id else {
         return Err(unprocessable(
@@ -55,7 +53,7 @@ pub fn to_reader(state: &AppState, request: ToReaderRequest) -> Result<ToReaderR
     };
 
     Ok(ToReaderResponse {
-        ciphertext: seal_reader_ciphertext(
+        ciphertext: CipherSuite::seal_reader_ciphertext(
             reader_pubkey,
             source.key_id,
             reader_aad,
@@ -70,7 +68,7 @@ pub fn to_enclave(
 ) -> Result<ToEnclaveResponse, MpcError> {
     require_active_system_key(state, request.system_ciphertext.key_id)?;
 
-    let opened = open_system_ciphertext(state.keypair(), &request.system_ciphertext)?;
+    let opened = CipherSuite::open_system_ciphertext(state.keypair(), &request.system_ciphertext)?;
     let source = source_context(&opened.source_aad);
 
     if request.chain_id != source.chain_id {
@@ -107,7 +105,7 @@ pub fn to_enclave(
     };
 
     Ok(ToEnclaveResponse {
-        ciphertext: seal_enclave_ciphertext(
+        ciphertext: CipherSuite::seal_enclave_ciphertext(
             request.enclave_pubkey,
             source.key_id,
             enclave_aad,
@@ -159,15 +157,15 @@ fn source_context(source: &SourceAad) -> SourceContext {
 mod tests {
     use super::*;
     use crate::attestation::LocalAttestationVerifier;
-    use crypto::{
-        HpkeKeypair, attestation_digest, open_enclave_ciphertext_for_tests,
-        open_reader_ciphertext_for_tests, reader_id, seal_system_ciphertext,
-    };
     use crate::error::MpcError;
     use crate::state::AppState;
     use codec::{
         Aad, AadCodec, AadKind, EnclaveAadV1, PlaintextCodec, ReaderAadV1, SystemHandleAadV1,
         SystemInputAadV1,
+    };
+    use crypto::{
+        HpkeKeypair, attestation_digest, open_enclave_ciphertext_for_tests,
+        open_reader_ciphertext_for_tests, reader_id, seal_system_ciphertext,
     };
     use types::{
         Address, Attestation, EnclaveMeasurement, HandleId, KeyId, PutReaderRequest, ReaderId,
