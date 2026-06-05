@@ -1,0 +1,1 @@
+//! Shared MPC wire types.

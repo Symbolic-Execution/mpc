@@ -3,6 +3,10 @@ name = "mpc"
 version = "0.1.0"
 edition = "2024"
 
+[workspace]
+members = ["crates/types"]
+resolver = "3"
+
 [dependencies]
 aes-gcm = "0.10.3"
 async-trait = "0.1"
