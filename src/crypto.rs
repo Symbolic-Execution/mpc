@@ -1,4 +1,7 @@
-use crate::aad::{Aad, EnclaveAadV1, ReaderAadV1, SourceAad, decode_source_aad, encode_aad};
+use crate::aad::{
+    Aad, EnclaveAadV1, ReaderAadV1, SourceAad, decode_enclave_aad, decode_reader_aad,
+    decode_source_aad, encode_aad,
+};
 use crate::error::MpcError;
 use crate::types::{
     Attestation, AttestationDigest, EnclaveCiphertextV1, FixedBytes, KeyId, PayloadBytes,
@@ -225,24 +228,32 @@ pub fn open_reader_ciphertext_for_tests(
     reader_keypair: &HpkeKeypair,
     ciphertext: &ReaderCiphertextV1,
 ) -> Result<Vec<u8>, MpcError> {
-    hpke_open(
+    let plaintext = hpke_open(
         reader_keypair,
         &ciphertext.enc.0,
         &ciphertext.aad.0,
         &ciphertext.ciphertext.0,
-    )
+    )?;
+    let aad = decode_reader_aad(&ciphertext.aad.0)?;
+    require_matching_key_id(ciphertext.key_id, aad.key_id)?;
+
+    Ok(plaintext)
 }
 
 pub fn open_enclave_ciphertext_for_tests(
     enclave_keypair: &HpkeKeypair,
     ciphertext: &EnclaveCiphertextV1,
 ) -> Result<Vec<u8>, MpcError> {
-    hpke_open(
+    let plaintext = hpke_open(
         enclave_keypair,
         &ciphertext.enc.0,
         &ciphertext.aad.0,
         &ciphertext.ciphertext.0,
-    )
+    )?;
+    let aad = decode_enclave_aad(&ciphertext.aad.0)?;
+    require_matching_key_id(ciphertext.key_id, aad.key_id)?;
+
+    Ok(plaintext)
 }
 
 pub fn encode_plaintext_suint256(value: [u8; 32]) -> Result<Vec<u8>, MpcError> {
@@ -543,6 +554,33 @@ mod tests {
     }
 
     #[test]
+    fn open_reader_ciphertext_rejects_tampered_top_level_key_id() {
+        let reader_keypair = HpkeKeypair::from_seed_for_tests([8u8; 32]);
+        let aad = ReaderAadV1 {
+            version: 1,
+            kind: AadKind::Reader,
+            chain_id: 31337,
+            domain_id: DomainId([1; 32]),
+            request_id: RequestId([2; 32]),
+            handle_id: HandleId([3; 32]),
+            reader_id: reader_id(reader_keypair.public_key),
+            type_tag: "sbool".to_string(),
+            key_id: KeyId([4; 32]),
+        };
+        let plaintext = encode_plaintext_sbool(true).unwrap();
+        let mut ciphertext =
+            seal_reader_ciphertext(reader_keypair.public_key, KeyId([4; 32]), aad, &plaintext)
+                .unwrap();
+
+        ciphertext.key_id = KeyId([5; 32]);
+
+        assert!(matches!(
+            open_reader_ciphertext_for_tests(&reader_keypair, &ciphertext),
+            Err(MpcError::Unprocessable(_))
+        ));
+    }
+
+    #[test]
     fn enclave_ciphertext_opens_with_matching_key_and_rejects_wrong_key() {
         let enclave_keypair = HpkeKeypair::from_seed_for_tests([10u8; 32]);
         let wrong_keypair = HpkeKeypair::from_seed_for_tests([11u8; 32]);
@@ -591,6 +629,33 @@ mod tests {
                 .unwrap_err();
 
         assert!(matches!(err, MpcError::Unprocessable(_)));
+    }
+
+    #[test]
+    fn open_enclave_ciphertext_rejects_tampered_top_level_key_id() {
+        let enclave_keypair = HpkeKeypair::from_seed_for_tests([10u8; 32]);
+        let aad = EnclaveAadV1 {
+            version: 1,
+            kind: AadKind::Enclave,
+            chain_id: 31337,
+            domain_id: DomainId([1; 32]),
+            request_id: RequestId([2; 32]),
+            handle_id: HandleId([3; 32]),
+            type_tag: "suint256".to_string(),
+            attestation_digest: AttestationDigest([4; 32]),
+            key_id: KeyId([5; 32]),
+        };
+        let plaintext = encode_plaintext_suint256([6u8; 32]).unwrap();
+        let mut ciphertext =
+            seal_enclave_ciphertext(enclave_keypair.public_key, KeyId([5; 32]), aad, &plaintext)
+                .unwrap();
+
+        ciphertext.key_id = KeyId([6; 32]);
+
+        assert!(matches!(
+            open_enclave_ciphertext_for_tests(&enclave_keypair, &ciphertext),
+            Err(MpcError::Unprocessable(_))
+        ));
     }
 
     #[test]
